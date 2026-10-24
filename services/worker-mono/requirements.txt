@@ -1,0 +1,12 @@
+fastapi>=0.112.0
+uvicorn>=0.30.0
+google-cloud-storage==2.14.0
+librosa>=0.10.1
+audioread>=3.0.1
+numpy>=1.26.4
+pydantic>=2.8.0
+torch>=2.0.0
+torchcrepe>=0.0.20
+sqlalchemy
+psycopg
+setuptools<74

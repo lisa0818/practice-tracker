@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+pydantic
+google-cloud-storage
+google-cloud-secret-manager
+psycopg2-binary
+librosa
+numpy<2.0.0
+scipy>=1.10.0,<1.13.0
+basic-pitch>=0.2.5
+requests
+sqlalchemy
+psycopg
+tensorflow==2.15.0
+protobuf==4.25.3

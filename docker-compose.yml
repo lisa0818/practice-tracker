@@ -1,0 +1,87 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: practice-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: PracticeTracker2026
+      POSTGRES_DB: app
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  adminer:
+    image: adminer:latest
+    container_name: practice-adminer
+    restart: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+
+  worker-mono:
+    build:
+      context: ./services/worker-mono
+      dockerfile: Dockerfile
+    container_name: practice-worker-mono
+    restart: always
+    ports:
+      - "8081:8080"
+    environment:
+      - DATABASE_URL=postgresql://postgres:PracticeTracker2026@postgres:5432/app
+      - GOOGLE_APPLICATION_CREDENTIALS=/service-account-key.json
+    volumes:
+      - ./service-account-key.json:/service-account-key.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker-poly:
+    build:
+      context: ./services/worker-poly
+      dockerfile: Dockerfile
+    container_name: practice-worker-poly
+    restart: always
+    ports:
+      - "8082:8082"
+    environment:
+      - DATABASE_URL=postgresql://postgres:PracticeTracker2026@postgres:5432/app
+      - GOOGLE_APPLICATION_CREDENTIALS=/service-account-key.json
+    volumes:
+      - ./service-account-key.json:/service-account-key.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  orchestrator:
+    build:
+      context: ./services/api
+      dockerfile: Dockerfile
+    container_name: practice-orchestrator
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:PracticeTracker2026@postgres:5432/app
+      - WORKER_MONO_URL=http://worker-mono:8080
+      - WORKER_POLY_URL=http://worker-poly:8082
+    depends_on:
+      postgres:
+        condition: service_healthy
+      worker-mono:
+        condition: service_started
+      worker-poly:
+        condition: service_started
+
+volumes:
+  postgres_data:

@@ -1,0 +1,17 @@
+# Python / Virtual Environments
+**/venv/
+venv/
+env/
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Environment Variables & Credentials
+.env
+service-account-key.json
+
+# IDE & OS Specific Files
+.vscode/
+.DS_Store
+Thumbs.dbgit rm -r --cached venv/ **/venv/ 2>NUL
+service-account-key.json
