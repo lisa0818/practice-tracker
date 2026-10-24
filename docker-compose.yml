@@ -25,9 +25,28 @@ services:
     container_name: practice-adminer
     restart: always
     ports:
-      - "8080:8080"
+      - "8085:8080"
     depends_on:
       - postgres
+
+  core-api:
+    build:
+      context: ./services/core
+      dockerfile: Dockerfile
+    container_name: practice-core-api
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+psycopg://postgres:PracticeTracker2026@postgres:5432/app
+      - JWT_SECRET=practice-tracker-super-secret-key-change-in-prod-2026
+      - GCS_BUCKET=practice-tracker-audio-bucket
+      - GOOGLE_APPLICATION_CREDENTIALS=/service-account-key.json
+    volumes:
+      - ./service-account-key.json:/service-account-key.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   worker-mono:
     build:
@@ -38,13 +57,13 @@ services:
     ports:
       - "8081:8080"
     environment:
-      - DATABASE_URL=postgresql://postgres:PracticeTracker2026@postgres:5432/app
+      - CORE_API_URL=http://core-api:8000
+      - GCS_BUCKET=practice-tracker-audio-bucket
       - GOOGLE_APPLICATION_CREDENTIALS=/service-account-key.json
     volumes:
       - ./service-account-key.json:/service-account-key.json:ro
     depends_on:
-      postgres:
-        condition: service_healthy
+      - core-api
 
   worker-poly:
     build:
@@ -53,35 +72,15 @@ services:
     container_name: practice-worker-poly
     restart: always
     ports:
-      - "8082:8082"
+      - "8082:8080"
     environment:
-      - DATABASE_URL=postgresql://postgres:PracticeTracker2026@postgres:5432/app
+      - CORE_API_URL=http://core-api:8000
+      - GCS_BUCKET=practice-tracker-audio-bucket
       - GOOGLE_APPLICATION_CREDENTIALS=/service-account-key.json
     volumes:
       - ./service-account-key.json:/service-account-key.json:ro
     depends_on:
-      postgres:
-        condition: service_healthy
-
-  orchestrator:
-    build:
-      context: ./services/api
-      dockerfile: Dockerfile
-    container_name: practice-orchestrator
-    restart: always
-    ports:
-      - "8000:8000"
-    environment:
-      - DATABASE_URL=postgresql://postgres:PracticeTracker2026@postgres:5432/app
-      - WORKER_MONO_URL=http://worker-mono:8080
-      - WORKER_POLY_URL=http://worker-poly:8082
-    depends_on:
-      postgres:
-        condition: service_healthy
-      worker-mono:
-        condition: service_started
-      worker-poly:
-        condition: service_started
+      - core-api
 
 volumes:
   postgres_data:

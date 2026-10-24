@@ -7,6 +7,5 @@ numpy>=1.26.4
 pydantic>=2.8.0
 torch>=2.0.0
 torchcrepe>=0.0.20
-sqlalchemy
-psycopg
+requests>=2.31.0
 setuptools<74

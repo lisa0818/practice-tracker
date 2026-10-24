@@ -1,12 +1,18 @@
-from datetime import datetime, timedelta
+"""
+Practice Tracker — Core API v2
+FastAPI service: auth, sessions, analysis results, progress.
+"""
+
+from datetime import datetime, timedelta, date
+from collections import defaultdict
 import os
-import requests
-from typing import Optional
-from fastapi import FastAPI, Depends, status, UploadFile, File, HTTPException
+from typing import Optional, List
+from fastapi import FastAPI, Depends, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from google.cloud import storage
 from pydantic import BaseModel, EmailStr
+from sqlalchemy import cast, Date, func
 from sqlalchemy.orm import Session
 
 from app.auth import (
@@ -21,7 +27,7 @@ from app.models import AnalysisResult, PracticeSession, User
 # Auto-create missing database tables on boot
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Music Practice Tracker - Core API")
+app = FastAPI(title="Music Practice Tracker — Core API v2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -31,58 +37,88 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configuration from Environment
-PROJECT_ID = os.getenv("PROJECT_ID", "practice-tracker-2026-10")
+# ── Config ────────────────────────────────────────────────────────────────────
+PROJECT_ID    = os.getenv("PROJECT_ID",    "practice-tracker-2026-10")
 UPLOADS_BUCKET = os.getenv("UPLOADS_BUCKET", f"{PROJECT_ID}-uploads")
-WORKER_URL = os.getenv("WORKER_URL", "https://worker-mono-571568987946.asia-south1.run.app/analyze")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
-# Pydantic Request Models
+# ── Pydantic models ───────────────────────────────────────────────────────────
+
 class UserRegister(BaseModel):
-    email: EmailStr
-    password: str
+    email:     EmailStr
+    password:  str
     full_name: str
-    role: str = "student"
-
-
-class UserLogin(BaseModel):
-    email: EmailStr
-    password: str
+    role:      str = "student"
 
 
 class SessionCreate(BaseModel):
-    title: str
+    title:        str
     target_scale: str
-    filename: str  # e.g., "my_c_major.wav" or "test-song.mp3"
-    mode: str = "mono"  # Accepts "mono" or "poly" to route GCS uploads dynamically
+    filename:     str
+    mode:         str = "mono"           # "mono" | "poly"
+    instrument:   Optional[str] = None
+    target_type:  Optional[str] = "scale"
+    bpm:          Optional[int] = None
+    tuning_hz:    Optional[int] = 440
+
+
+class NoteEventSchema(BaseModel):
+    onset_s:        float
+    offset_s:       float
+    midi:           int
+    cents_error:    Optional[float] = None
+    confidence:     float = 1.0
+    label:          Optional[str]  = None
+    expected_midi:  Optional[int]  = None
+    onset_error_ms: Optional[float]= None
+    early_late:     Optional[str]  = None   # "early" | "late" | "onBeat"
 
 
 class AnalysisSubmit(BaseModel):
-    overall_score: float
-    avg_cents_error: float
-    extracted_notes: dict
-    timing_alignment: Optional[dict] = None
+    """Payload sent by the worker when analysis is complete."""
+    overall_score:     float
+    pitch_score:       Optional[float] = None
+    timing_score:      Optional[float] = None
+
+    # Pitch
+    in_tune_pct:       Optional[float] = None
+    avg_cents_error:   float = 0.0
+    is_polyphonic:     bool  = False
+    pitch_contour_url: Optional[str]  = None
+
+    # Timing
+    avg_onset_ms:      Optional[float] = None
+    steadiness:        Optional[float] = None
+    notes_on_beat_pct: Optional[float] = None
+    practice_tip:      Optional[str]   = None
+
+    # Note events
+    note_events:       Optional[list]  = None
+
+    # Backward compat
+    extracted_notes:   Optional[dict]  = None
+    timing_alignment:  Optional[dict]  = None
 
 
-# Health Endpoint
+# ── Health ────────────────────────────────────────────────────────────────────
+
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "service": "core-api"}
+    return {"status": "healthy", "service": "core-api-v2"}
 
 
-# Auth Endpoints
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
 @app.post("/auth/register", status_code=status.HTTP_201_CREATED)
 def register(user_data: UserRegister, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter(User.email == user_data.email).first()
-    if existing_user:
+    if db.query(User).filter(User.email == user_data.email).first():
         raise HTTPException(status_code=400, detail="Email is already registered")
 
-    hashed_pw = get_password_hash(user_data.password)
     new_user = User(
         email=user_data.email,
-        hashed_password=hashed_pw,
+        hashed_password=get_password_hash(user_data.password),
         full_name=user_data.full_name,
         role=user_data.role,
     )
@@ -91,155 +127,145 @@ def register(user_data: UserRegister, db: Session = Depends(get_db)):
     db.refresh(new_user)
 
     token = create_access_token(data={"sub": str(new_user.id)})
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "user_id": str(new_user.id),
-    }
+    return {"access_token": token, "token_type": "bearer", "user_id": str(new_user.id)}
 
 
 @app.post("/auth/login")
-def login(
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db: Session = Depends(get_db),
-):
+def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(status_code=400, detail="Invalid email or password")
 
     token = create_access_token(data={"sub": str(user.id)})
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "user_id": str(user.id),
-    }
+    return {"access_token": token, "token_type": "bearer", "user_id": str(user.id)}
 
 
 @app.get("/auth/me")
 def get_me(current_user: User = Depends(get_current_user)):
     return {
-        "id": str(current_user.id),
-        "email": current_user.email,
+        "id":        str(current_user.id),
+        "email":     current_user.email,
         "full_name": current_user.full_name,
-        "role": current_user.role,
+        "role":      current_user.role,
     }
 
 
-# Practice Sessions & Signed Upload URL Endpoints
+# ── Sessions ──────────────────────────────────────────────────────────────────
+
 @app.post("/sessions", status_code=status.HTTP_201_CREATED)
 def create_session(
     session_data: SessionCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    current_user: User  = Depends(get_current_user),
+    db:           Session = Depends(get_db),
 ):
     new_session = PracticeSession(
         user_id=current_user.id,
         title=session_data.title,
         target_scale=session_data.target_scale,
+        instrument=session_data.instrument,
+        target_type=session_data.target_type,
+        mode=session_data.mode,
+        bpm=session_data.bpm,
+        tuning_hz=session_data.tuning_hz or 440,
         status="pending",
     )
     db.add(new_session)
     db.commit()
     db.refresh(new_session)
 
-    # Dynamically route to mono or poly folder based on request mode
     folder_type = "poly" if session_data.mode.lower() == "poly" else "mono"
-    gcs_object_path = f"uploads/{folder_type}/{current_user.id}/{new_session.id}_{session_data.filename}"
-    
-    new_session.audio_gcs_path = gcs_object_path
+    gcs_path    = f"uploads/{folder_type}/{current_user.id}/{new_session.id}_{session_data.filename}"
+    new_session.audio_gcs_path = gcs_path
     db.commit()
 
+    # Generate signed upload URL
     try:
         storage_client = storage.Client()
-        bucket = storage_client.bucket(UPLOADS_BUCKET)
-        blob = bucket.blob(gcs_object_path)
-
-        upload_url = blob.generate_signed_url(
+        bucket         = storage_client.bucket(UPLOADS_BUCKET)
+        blob           = bucket.blob(gcs_path)
+        upload_url     = blob.generate_signed_url(
             version="v4",
             expiration=timedelta(minutes=15),
             method="PUT",
         )
-    except Exception as e:
-        upload_url = f"http://localhost:8000/mock-upload/{gcs_object_path}"
+    except Exception:
+        # Fallback for local dev
+        upload_url = f"http://localhost:8000/mock-upload/{gcs_path}"
 
     return {
-        "session_id": str(new_session.id),
-        "mode": folder_type,
-        "gcs_path": gcs_object_path,
-        "upload_url": upload_url,
+        "session_id":        str(new_session.id),
+        "mode":              folder_type,
+        "gcs_path":          gcs_path,
+        "upload_url":        upload_url,
         "expires_in_minutes": 15,
+    }
+
+
+def _serialize_session(session: PracticeSession) -> dict:
+    result_data = None
+    if session.result:
+        r = session.result
+        result_data = {
+            "overall_score":     float(r.overall_score),
+            "pitch_score":       float(r.pitch_score)  if r.pitch_score  else None,
+            "timing_score":      float(r.timing_score) if r.timing_score else None,
+            "in_tune_pct":       float(r.in_tune_pct)  if r.in_tune_pct  else None,
+            "avg_cents_error":   float(r.avg_cents_error) if r.avg_cents_error else 0.0,
+            "is_polyphonic":     bool(r.is_polyphonic),
+            "pitch_contour_url": r.pitch_contour_url,
+            "avg_onset_ms":      float(r.avg_onset_ms)      if r.avg_onset_ms      else None,
+            "steadiness":        float(r.steadiness)        if r.steadiness        else None,
+            "notes_on_beat_pct": float(r.notes_on_beat_pct) if r.notes_on_beat_pct else None,
+            "practice_tip":      r.practice_tip,
+            "note_events":       r.note_events or [],
+            # Backward compat
+            "extracted_notes":   r.extracted_notes,
+            "timing_alignment":  r.timing_alignment,
+        }
+
+    return {
+        "session_id":     str(session.id),
+        "title":          session.title,
+        "target_scale":   session.target_scale,
+        "instrument":     session.instrument,
+        "target_type":    session.target_type,
+        "mode":           session.mode,
+        "bpm":            session.bpm,
+        "tuning_hz":      session.tuning_hz,
+        "status":         session.status,
+        "audio_gcs_path": session.audio_gcs_path,
+        "created_at":     session.created_at,
+        "result":         result_data,
+        # Convenience score fields for list views
+        "overall_score":  float(session.result.overall_score) if session.result else None,
+        "pitch_score":    float(session.result.pitch_score)   if session.result and session.result.pitch_score else None,
+        "timing_score":   float(session.result.timing_score)  if session.result and session.result.timing_score else None,
     }
 
 
 @app.get("/sessions/{session_id}")
 def get_session(
-    session_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    session_id:   str,
+    current_user: User    = Depends(get_current_user),
+    db:           Session = Depends(get_db),
 ):
     session = (
         db.query(PracticeSession)
         .filter(
-            PracticeSession.id == session_id,
+            PracticeSession.id      == session_id,
             PracticeSession.user_id == current_user.id,
         )
         .first()
     )
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-
-    result_data = None
-    if session.result:
-        result_data = {
-            "overall_score": float(session.result.overall_score),
-            "avg_cents_error": float(session.result.avg_cents_error),
-            "extracted_notes": session.result.extracted_notes,
-            "timing_alignment": session.result.timing_alignment,
-        }
-
-    return {
-        "session_id": str(session.id),
-        "title": session.title,
-        "target_scale": session.target_scale,
-        "status": session.status,
-        "audio_gcs_path": session.audio_gcs_path,
-        "created_at": session.created_at,
-        "result": result_data,
-    }
-
-
-# Save Analysis Results Endpoint (Called when worker finishes processing)
-@app.post("/sessions/{session_id}/analysis", status_code=status.HTTP_201_CREATED)
-def save_analysis_results(
-    session_id: str,
-    analysis_data: AnalysisSubmit,
-    db: Session = Depends(get_db),
-):
-    session = db.query(PracticeSession).filter(PracticeSession.id == session_id).first()
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    # Save metrics into AnalysisResult table
-    analysis_result = AnalysisResult(
-        session_id=session.id,
-        overall_score=analysis_data.overall_score,
-        avg_cents_error=analysis_data.avg_cents_error,
-        extracted_notes=analysis_data.extracted_notes,
-        timing_alignment=analysis_data.timing_alignment,
-    )
-    session.status = "completed"
-
-    db.add(analysis_result)
-    db.commit()
-    db.refresh(analysis_result)
-
-    return {"status": "success", "analysis_id": str(analysis_result.id)}
+    return _serialize_session(session)
 
 
 @app.get("/sessions")
 def list_sessions(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    current_user: User    = Depends(get_current_user),
+    db:           Session = Depends(get_db),
 ):
     sessions = (
         db.query(PracticeSession)
@@ -247,14 +273,151 @@ def list_sessions(
         .order_by(PracticeSession.created_at.desc())
         .all()
     )
-    
-    return [
-        {
-            "session_id": str(session.id),
-            "title": session.title,
-            "target_scale": session.target_scale,
-            "status": session.status,
-            "created_at": session.created_at,
-        }
-        for session in sessions
-    ]
+    return [_serialize_session(s) for s in sessions]
+
+
+# ── Session status update (called by workers) ────────────────────────────────
+
+class StatusUpdate(BaseModel):
+    status: str  # "processing" | "failed"
+
+@app.patch("/sessions/{session_id}/status")
+def update_session_status(
+    session_id:  str,
+    body:        StatusUpdate,
+    db:          Session = Depends(get_db),
+):
+    """
+    Internal — workers call this to update session status.
+    No user auth; protected by Cloud Run internal-only ingress.
+    """
+    allowed = {"processing", "failed", "completed"}
+    if body.status not in allowed:
+        raise HTTPException(status_code=400, detail=f"status must be one of {allowed}")
+
+    session = db.query(PracticeSession).filter(PracticeSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session.status = body.status
+    db.commit()
+    return {"session_id": session_id, "status": body.status}
+
+
+# ── Analysis results (called by worker) ──────────────────────────────────────
+
+@app.post("/sessions/{session_id}/analysis", status_code=status.HTTP_201_CREATED)
+def save_analysis_results(
+    session_id:    str,
+    analysis_data: AnalysisSubmit,
+    db:            Session = Depends(get_db),
+):
+    """
+    Internal endpoint — called by workers after analysis.
+    No auth required; protected by Cloud Run ingress (internal traffic only).
+    Idempotent: if a result already exists, update it.
+    """
+    session = db.query(PracticeSession).filter(PracticeSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    existing = db.query(AnalysisResult).filter(AnalysisResult.session_id == session.id).first()
+    if existing:
+        # Idempotent update
+        result = existing
+    else:
+        result = AnalysisResult(session_id=session.id)
+        db.add(result)
+
+    result.overall_score     = analysis_data.overall_score
+    result.pitch_score       = analysis_data.pitch_score
+    result.timing_score      = analysis_data.timing_score
+    result.in_tune_pct       = analysis_data.in_tune_pct
+    result.avg_cents_error   = analysis_data.avg_cents_error
+    result.is_polyphonic     = analysis_data.is_polyphonic
+    result.pitch_contour_url = analysis_data.pitch_contour_url
+    result.avg_onset_ms      = analysis_data.avg_onset_ms
+    result.steadiness        = analysis_data.steadiness
+    result.notes_on_beat_pct = analysis_data.notes_on_beat_pct
+    result.practice_tip      = analysis_data.practice_tip
+    result.note_events       = analysis_data.note_events
+    result.extracted_notes   = analysis_data.extracted_notes
+    result.timing_alignment  = analysis_data.timing_alignment
+
+    session.status = "completed"
+    db.commit()
+    db.refresh(result)
+
+    return {"status": "success", "analysis_id": str(result.id)}
+
+
+# ── Progress ──────────────────────────────────────────────────────────────────
+
+@app.get("/progress")
+def get_progress(
+    current_user: User    = Depends(get_current_user),
+    db:           Session = Depends(get_db),
+):
+    """
+    Returns:
+    - sessions: all sessions with scores
+    - streak_days: current consecutive-day streak
+    - practice_days: list of ISO date strings where user practiced
+    - pieces: per-title latest score and change
+    """
+    sessions = (
+        db.query(PracticeSession)
+        .filter(PracticeSession.user_id == current_user.id)
+        .order_by(PracticeSession.created_at.desc())
+        .all()
+    )
+
+    serialized = [_serialize_session(s) for s in sessions]
+
+    # Practice days
+    practice_days = sorted(set(
+        s.created_at.date().isoformat()
+        for s in sessions
+    ))
+
+    # Streak
+    streak = _compute_streak(practice_days)
+
+    # Per-piece aggregation
+    pieces_map: dict[str, list] = defaultdict(list)
+    for s in sessions:
+        if s.result:
+            pieces_map[s.title].append(float(s.result.overall_score))
+
+    pieces = []
+    for title, scores in pieces_map.items():
+        latest = scores[0]
+        change = latest - scores[1] if len(scores) > 1 else 0
+        pieces.append({
+            "title":         title,
+            "latest_score":  latest,
+            "score_change":  change,
+            "session_count": len(scores),
+        })
+
+    pieces.sort(key=lambda p: p["latest_score"], reverse=True)
+
+    return {
+        "sessions":      serialized,
+        "streak_days":   streak,
+        "practice_days": practice_days,
+        "pieces":        pieces,
+    }
+
+
+def _compute_streak(practice_days: list[str]) -> int:
+    if not practice_days:
+        return 0
+    today = date.today()
+    streak = 0
+    day = today
+    day_set = set(practice_days)
+    while day.isoformat() in day_set:
+        streak += 1
+        day = day - timedelta(days=1)
+    return streak
