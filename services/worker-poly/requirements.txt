@@ -9,3 +9,4 @@ basic-pitch>=0.2.5
 requests>=2.31.0
 tensorflow==2.15.0
 protobuf==4.25.3
+python-multipart>=0.0.9

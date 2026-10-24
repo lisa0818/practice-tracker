@@ -9,3 +9,4 @@ torch>=2.0.0
 torchcrepe>=0.0.20
 requests>=2.31.0
 setuptools<74
+python-multipart>=0.0.9

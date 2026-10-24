@@ -8,10 +8,11 @@ import os
 import base64
 import numpy as np
 import requests
-from fastapi import FastAPI, HTTPException, Request
+import tempfile
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from typing import Optional, Dict, Any
 
-from analyzer import analyze_polyphonic_audio
+from analyzer import analyze_polyphonic_audio, analyze_polyphonic_file
 
 app = FastAPI(title="Practice Tracker — Poly Worker")
 
@@ -32,6 +33,55 @@ def _convert_numpy(obj):
 @app.get("/health")
 def health():
     return {"status": "healthy", "worker": "poly"}
+
+
+@app.post("/analyze-file")
+async def analyze_file(
+    request: Request,
+    bpm: Optional[float] = None,
+    tuning: float = 440.0,
+    session_id: Optional[str] = None,
+):
+    """Directly analyze an uploaded polyphonic audio file from request body."""
+    content = await request.body()
+    suffix = ".wav"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(content)
+        temp_path = tmp.name
+
+    try:
+        metrics = analyze_polyphonic_file(temp_path, bpm, tuning)
+        clean   = _convert_numpy(metrics)
+    except Exception as e:
+        if session_id:
+            try:
+                requests.patch(f"{CORE_API_URL}/sessions/{session_id}/status",
+                               json={"status": "failed"}, timeout=5)
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail=f"Poly analysis error: {e}")
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+    # If session_id provided, post results to Core API
+    if session_id and session_id != "unknown":
+        try:
+            resp = requests.post(
+                f"{CORE_API_URL}/sessions/{session_id}/analysis",
+                json=clean,
+                timeout=30,
+            )
+            resp.raise_for_status()
+        except Exception as e:
+            print(f"WARNING: Failed to post results to core API: {e}")
+
+    return {
+        "session_id": session_id or "direct",
+        "status":     "success",
+        "worker":     "poly",
+        "metrics":    clean,
+    }
 
 
 @app.post("/")

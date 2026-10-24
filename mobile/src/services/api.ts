@@ -77,10 +77,10 @@ export type TargetType = 'scale' | 'melody' | 'reference';
 export type InstrumentMode = 'mono' | 'poly';
 
 export interface CreateSessionPayload {
-  title:        string;
-  target_scale: string;
-  filename:     string;
-  mode:         InstrumentMode;
+  title:         string;
+  target_scale?: string;
+  filename:      string;
+  mode:          InstrumentMode;
   instrument?:  string;
   target_type?: TargetType;
   bpm?:         number;
@@ -97,6 +97,16 @@ export interface CreateSessionResponse {
 
 export async function createSession(payload: CreateSessionPayload): Promise<CreateSessionResponse> {
   const { data } = await apiClient.post<CreateSessionResponse>('/sessions', payload);
+  return data;
+}
+
+export async function analyzeDirectAudio(formData: FormData): Promise<SessionDetail> {
+  const { data } = await apiClient.post<SessionDetail>('/sessions/analyze-direct', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+    timeout: 120_000,
+  });
   return data;
 }
 

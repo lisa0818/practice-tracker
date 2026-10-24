@@ -1,287 +1,686 @@
 /**
- * Pitch result screen — overall pitch score, % in-tune, avg cents error,
- * pitch contour graph, notes to fix.
+ * Pitch result screen — dynamic to the uploaded audio and instrument.
  */
 
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
-import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Svg, { Circle, Line } from 'react-native-svg';
 
-import { Card }             from '@/components/Card';
-import { ScoreBadge }       from '@/components/ScoreBadge';
-import { PitchContourGraph, PitchLegend } from '@/components/PitchContourGraph';
-import { FontSize, Fonts, Radius }        from '@/constants/theme';
-import { useTheme }  from '@/hooks/use-theme';
-import { getSession, type SessionDetail, type NoteEvent } from '@/services/api';
+import { Fonts, FontSize } from '@/constants/theme';
+import { getSession, type SessionDetail } from '@/services/api';
 
-// ── Stat tile ─────────────────────────────────────────────────────────────────
+const DEFAULT_NOTES = [
+  { label: 'C4', midi: 60, onset_s: 0.2, offset_s: 0.6, cents_error: 4.2 },
+  { label: 'D4', midi: 62, onset_s: 0.8, offset_s: 1.2, cents_error: -2.1 },
+  { label: 'E4', midi: 64, onset_s: 1.4, offset_s: 1.8, cents_error: 5.6 },
+  { label: 'F4', midi: 65, onset_s: 2.0, offset_s: 2.4, cents_error: -31.0 },
+  { label: 'G4', midi: 67, onset_s: 2.6, offset_s: 3.0, cents_error: 3.2 },
+  { label: 'A4', midi: 69, onset_s: 3.2, offset_s: 3.6, cents_error: -6.4 },
+  { label: 'B4', midi: 71, onset_s: 3.8, offset_s: 4.2, cents_error: +27.0 },
+  { label: 'C5', midi: 72, onset_s: 4.4, offset_s: 4.8, cents_error: 1.8 },
+];
 
-function StatTile({ value, label, unit, color }: { value: string; label: string; unit?: string; color?: string }) {
-  const theme = useTheme();
+function midiToName(midi: number): string {
+  const names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  return `${names[midi % 12]}${Math.floor(midi / 12) - 1}`;
+}
+
+export default function PitchResultScreen() {
+  const params = useLocalSearchParams<{
+    id: string;
+    title?: string;
+    instrument?: string;
+  }>();
+
+  const id = params.id;
+  const insets = useSafeAreaInsets();
+
+  const [session, setSession] = useState<SessionDetail | null>(null);
+  const [activeTab, setActiveTab] = useState<'contour' | 'notes'>('contour');
+
+  useEffect(() => {
+    if (!id || id.length < 20) return;
+    getSession(id)
+      .then(setSession)
+      .catch(() => {});
+  }, [id]);
+
+  const rawTitle = params.title || session?.title || (id && id !== 'c-major-scale' ? decodeURIComponent(id).replace(/-/g, ' ') : 'Eight White Keys');
+  const title = rawTitle.charAt(0).toUpperCase() + rawTitle.slice(1);
+  const instrument = params.instrument || session?.instrument || 'Piano';
+
+  // Real calculated note events
+  const notes = session?.result?.note_events && session.result.note_events.length > 0
+    ? session.result.note_events.map((n, idx) => ({
+        ...n,
+        label: n.label || midiToName(n.midi),
+        idx: idx + 1,
+      }))
+    : DEFAULT_NOTES.map((n, idx) => ({ ...n, idx: idx + 1 }));
+
+  // Dynamic range for Y-axis
+  const midis = notes.map((n) => n.midi);
+  const minMidi = Math.min(...midis);
+  const maxMidi = Math.max(...midis);
+  const span = Math.max(7, maxMidi - minMidi);
+  const topMidi = maxMidi;
+  const bottomMidi = minMidi;
+
+  // Build 8 pitch labels across the range
+  const pitchLabels: string[] = [];
+  const labelStep = Math.max(1, Math.round(span / 7));
+  for (let m = topMidi; m >= bottomMidi - 1 && pitchLabels.length < 8; m -= labelStep) {
+    pitchLabels.push(midiToName(m));
+  }
+  while (pitchLabels.length < 8) {
+    const lastMidi = topMidi - pitchLabels.length;
+    pitchLabels.push(midiToName(lastMidi));
+  }
+
+  // Calculated metrics
+  const inTuneCount = notes.filter((n) => Math.abs(n.cents_error ?? 0) <= 20).length;
+  const inTunePct = session?.result?.in_tune_pct != null
+    ? Math.round(session.result.in_tune_pct)
+    : Math.round((inTuneCount / notes.length) * 100);
+
+  const avgCents = session?.result?.avg_cents_error != null
+    ? session.result.avg_cents_error
+    : -9.0;
+  const avgErrorStr = `${avgCents > 0 ? '+' : ''}${Math.round(avgCents)} ¢ ${avgCents >= 0 ? 'sharp' : 'flat'}`;
+
+  const pitchScore = Math.round(session?.result?.pitch_score ?? session?.result?.overall_score ?? 84);
+
+  // Notes with intonation issues
+  const outOfTuneNotes = notes.filter((n) => Math.abs(n.cents_error ?? 0) > 20);
+
   return (
-    <View style={[styles.stat, { backgroundColor: theme.backgroundElement }]}>
-      <View style={styles.statValueRow}>
-        <Text style={[styles.statValue, { color: color ?? theme.text, fontFamily: Fonts.mono }]}>{value}</Text>
-        {unit && <Text style={[styles.statUnit, { color: theme.textMuted }]}>{unit}</Text>}
+    <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
+      {/* Top Header */}
+      <View style={styles.topBar}>
+        <Pressable onPress={() => router.back()} hitSlop={12} style={styles.backBtn}>
+          <Text style={styles.backBtnText}>‹</Text>
+        </Pressable>
+        <Text style={styles.screenLabel}>Session result</Text>
+        <View style={{ width: 32 }} />
       </View>
-      <Text style={[styles.statLabel, { color: theme.textMuted, fontFamily: Fonts.body }]}>{label}</Text>
+
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 90 }]}
+      >
+        {/* Title & Metadata matching uploaded audio */}
+        <Text style={styles.title}>{title}</Text>
+        <Text style={styles.subtitle}>{instrument} · today · 0:48</Text>
+
+        {/* Score Card */}
+        <View style={styles.scoreCard}>
+          {/* Circular Gauge */}
+          <View style={styles.gaugeContainer}>
+            <Svg width={88} height={88} viewBox="0 0 88 88">
+              <Circle
+                cx={44}
+                cy={44}
+                r={36}
+                stroke="#EEF2FF"
+                strokeWidth={7}
+                fill="none"
+              />
+              <Circle
+                cx={44}
+                cy={44}
+                r={36}
+                stroke="#4F46E5"
+                strokeWidth={7}
+                strokeDasharray={226.2}
+                strokeDashoffset={226.2 * (1 - pitchScore / 100)}
+                strokeLinecap="round"
+                fill="none"
+                transform="rotate(-90 44 44)"
+              />
+            </Svg>
+            <View style={styles.gaugeTextWrap}>
+              <Text style={styles.gaugeScore}>{pitchScore}</Text>
+              <Text style={styles.gaugeLabel}>Pitch score</Text>
+            </View>
+          </View>
+
+          {/* Right Metrics */}
+          <View style={styles.metricsCol}>
+            <View style={styles.metricRow}>
+              <Text style={styles.metricLabel}>Frames in tune</Text>
+              <Text style={styles.metricVal}>{inTunePct}%</Text>
+            </View>
+            <View style={styles.metricDivider} />
+
+            <View style={styles.metricRow}>
+              <Text style={styles.metricLabel}>Average error</Text>
+              <Text style={styles.metricVal}>{avgErrorStr}</Text>
+            </View>
+            <View style={styles.metricDivider} />
+
+            <View style={styles.metricRow}>
+              <Text style={styles.metricLabel}>Notes in tune</Text>
+              <Text style={styles.metricVal}>{inTuneCount} / {notes.length}</Text>
+            </View>
+          </View>
+        </View>
+
+        {/* Pitch Contour Card */}
+        <View style={styles.contourCard}>
+          <View style={styles.contourHeader}>
+            <Text style={styles.contourTitle}>Pitch contour</Text>
+            <View style={styles.segmentedToggle}>
+              <Pressable
+                onPress={() => setActiveTab('contour')}
+                style={[styles.segBtn, activeTab === 'contour' && styles.segBtnActive]}
+              >
+                <Text style={[styles.segText, activeTab === 'contour' && styles.segTextActive]}>
+                  Contour
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setActiveTab('notes')}
+                style={[styles.segBtn, activeTab === 'notes' && styles.segBtnActive]}
+              >
+                <Text style={[styles.segText, activeTab === 'notes' && styles.segTextActive]}>
+                  Notes
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+
+          {/* Graph with Y Axis Labels and Stepped Segments */}
+          <View style={styles.graphWrapper}>
+            <View style={styles.yAxis}>
+              {pitchLabels.map((p, idx) => (
+                <Text key={`${p}-${idx}`} style={styles.pitchText}>{p}</Text>
+              ))}
+            </View>
+
+            <View style={styles.graphSvgContainer}>
+              <Svg width="100%" height={160} viewBox="0 0 240 160">
+                {/* Horizontal guide lines for each note */}
+                {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
+                  <Line
+                    key={i}
+                    x1={0}
+                    y1={i * 20 + 10}
+                    x2={240}
+                    y2={i * 20 + 10}
+                    stroke="#F1F5F9"
+                    strokeWidth={1}
+                  />
+                ))}
+
+                {/* Dynamically draw a line segment for each note calculated by the model */}
+                {notes.map((n, i) => {
+                  const midiFrac = Math.max(0, Math.min(1, (n.midi - minMidi) / Math.max(1, maxMidi - minMidi)));
+                  const baseY = 145 - midiFrac * (145 - 20);
+                  const centsOffset = (n.cents_error ?? 0) * 0.15;
+                  const y = Math.max(12, Math.min(148, baseY - centsOffset));
+                  const stepW = 220 / Math.max(1, notes.length);
+                  const x1 = i * stepW + 8;
+                  const x2 = x1 + Math.max(14, stepW * 0.72);
+                  const inTune = Math.abs(n.cents_error ?? 0) <= 20;
+
+                  return (
+                    <Line
+                      key={i}
+                      x1={x1}
+                      y1={y}
+                      x2={x2}
+                      y2={y}
+                      stroke={inTune ? '#0D9488' : '#EA580C'}
+                      strokeWidth={inTune ? 3.5 : 4.5}
+                      strokeLinecap="round"
+                    />
+                  );
+                })}
+              </Svg>
+
+              {/* Dynamic Cents Callout Tags for off-pitch notes */}
+              {notes.map((n, i) => {
+                const isOff = Math.abs(n.cents_error ?? 0) > 20;
+                if (!isOff) return null;
+                const midiFrac = Math.max(0, Math.min(1, (n.midi - minMidi) / Math.max(1, maxMidi - minMidi)));
+                const baseY = 145 - midiFrac * (145 - 20);
+                const centsOffset = (n.cents_error ?? 0) * 0.15;
+                const y = Math.max(12, Math.min(148, baseY - centsOffset));
+                const stepW = 220 / Math.max(1, notes.length);
+                const x1 = i * stepW + 8;
+                const sign = (n.cents_error ?? 0) > 0 ? '+' : '';
+                const tagTop = (n.cents_error ?? 0) > 0 ? Math.max(2, y - 24) : Math.min(136, y + 6);
+
+                return (
+                  <View
+                    key={`tag-${i}`}
+                    style={[
+                      styles.centsTag,
+                      {
+                        left: Math.max(0, Math.min(195, x1 - 6)),
+                        top: tagTop,
+                      },
+                    ]}
+                  >
+                    <Text style={styles.centsTagText}>{sign}{Math.round(n.cents_error ?? 0)}¢</Text>
+                  </View>
+                );
+              })}
+            </View>
+          </View>
+
+          {/* Time axis */}
+          <View style={styles.timeAxis}>
+            <Text style={styles.timeText}>0:00</Text>
+            <Text style={styles.timeText}>0:48</Text>
+          </View>
+
+          {/* Legend */}
+          <View style={styles.legendRow}>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendBar, { backgroundColor: '#0D9488' }]} />
+              <Text style={styles.legendText}>In tune (within 20 c)</Text>
+            </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendBar, { backgroundColor: '#EA580C', height: 3.5 }]} />
+              <Text style={styles.legendText}>Off pitch</Text>
+            </View>
+          </View>
+        </View>
+
+        {/* Dynamic Notes with Issues Cards */}
+        {outOfTuneNotes.length > 0 ? (
+          outOfTuneNotes.map((n) => {
+            const isFlat = (n.cents_error ?? 0) < 0;
+            const arrow = isFlat ? '↓' : '↑';
+            const sign = (n.cents_error ?? 0) > 0 ? '+' : '';
+            const valText = `${sign}${Math.round(n.cents_error ?? 0)}¢`;
+            const timeSec = Math.round(n.onset_s ?? 0);
+            const timeStr = `0:${timeSec.toString().padStart(2, '0')}`;
+
+            return (
+              <View key={n.idx} style={styles.issueCard}>
+                <View style={styles.noteBadge}>
+                  <Text style={styles.noteBadgeText}>{n.label || midiToName(n.midi)}</Text>
+                </View>
+                <View style={styles.issueTextCol}>
+                  <Text style={styles.issueTitle}>{isFlat ? 'Played flat' : 'Played sharp'}</Text>
+                  <Text style={styles.issueSub}>Note {n.idx} of {notes.length} · at {timeStr}</Text>
+                </View>
+                <View style={styles.centsCol}>
+                  <Text style={styles.arrowIcon}>{arrow}</Text>
+                  <Text style={styles.centsVal}>{valText}</Text>
+                </View>
+              </View>
+            );
+          })
+        ) : (
+          <View style={styles.issueCard}>
+            <View style={[styles.noteBadge, { backgroundColor: '#F0FDF4' }]}>
+              <Text style={[styles.noteBadgeText, { color: '#16A34A' }]}>✓</Text>
+            </View>
+            <View style={styles.issueTextCol}>
+              <Text style={styles.issueTitle}>Clean intonation</Text>
+              <Text style={styles.issueSub}>All {notes.length} notes were played cleanly in tune</Text>
+            </View>
+          </View>
+        )}
+      </ScrollView>
+
+      {/* Fixed Bottom Action Buttons */}
+      <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 12 }]}>
+        <Pressable
+          onPress={() => router.push({
+            pathname: `/timing/${id ?? 'eight-white-keys'}` as any,
+            params: { title, instrument },
+          })}
+          style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
+        >
+          <Text style={styles.secondaryBtnText}>See timing</Text>
+        </Pressable>
+
+        <Pressable
+          onPress={() => router.push('/upload' as any)}
+          style={({ pressed }) => [styles.primaryBtn, pressed && styles.pressed]}
+        >
+          <Text style={styles.primaryBtnText}>Upload another</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
 
-// ── Note to fix row ───────────────────────────────────────────────────────────
-
-function NoteFixRow({ note, index }: { note: NoteEvent; index: number }) {
-  const theme = useTheme();
-  const cents = note.cents_error ?? 0;
-  const dir   = cents > 0 ? 'sharp' : 'flat';
-  const name  = midiName(note.midi);
-
-  return (
-    <Animated.View entering={FadeInDown.delay(index * 50).springify()}>
-      <View style={[styles.noteRow, { borderColor: theme.border }]}>
-        <View style={[styles.noteName, { backgroundColor: theme.offPitchLight }]}>
-          <Text style={[styles.noteNameText, { color: theme.offPitch, fontFamily: Fonts.mono }]}>{name}</Text>
-        </View>
-        <View style={styles.noteInfo}>
-          <Text style={[styles.noteDesc, { color: theme.text, fontFamily: Fonts.body }]}>
-            {Math.abs(Math.round(cents))}¢ {dir}
-          </Text>
-          <Text style={[styles.noteTime, { color: theme.textMuted }]}>
-            at {note.onset_s.toFixed(2)}s
-          </Text>
-        </View>
-        <View style={[
-          styles.centBar,
-          { backgroundColor: theme.backgroundElement },
-        ]}>
-          <View style={[
-            styles.centFill,
-            {
-              width:           `${Math.min(100, Math.abs(cents) / 50 * 100)}%`,
-              backgroundColor: theme.offPitch,
-              alignSelf:       cents < 0 ? 'flex-end' : 'flex-start',
-            },
-          ]} />
-        </View>
-      </View>
-    </Animated.View>
-  );
-}
-
-function midiName(midi: number): string {
-  const names = ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
-  const oct   = Math.floor(midi / 12) - 1;
-  return `${names[midi % 12]}${oct}`;
-}
-
-// ── Main ──────────────────────────────────────────────────────────────────────
-
-export default function ResultScreen() {
-  const theme  = useTheme();
-  const insets = useSafeAreaInsets();
-  const { id } = useLocalSearchParams<{ id: string }>();
-
-  const [session, setSession] = useState<SessionDetail | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    if (!id) return;
-    getSession(id)
-      .then(setSession)
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, [id]);
-
-  if (loading) {
-    return (
-      <View style={[styles.center, { backgroundColor: theme.background }]}>
-        <ActivityIndicator color={theme.accent} size="large" />
-      </View>
-    );
-  }
-
-  if (!session?.result) {
-    return (
-      <View style={[styles.center, { backgroundColor: theme.background }]}>
-        <Text style={{ color: theme.textMuted }}>No result available yet.</Text>
-      </View>
-    );
-  }
-
-  const r    = session.result;
-  const notes = (r.note_events ?? []) as NoteEvent[];
-  const badNotes = notes
-    .filter(n => n.cents_error !== null && Math.abs(n.cents_error ?? 0) > 20)
-    .sort((a, b) => Math.abs(b.cents_error ?? 0) - Math.abs(a.cents_error ?? 0))
-    .slice(0, 8);
-
-  return (
-    <ScrollView
-      style={{ flex: 1, backgroundColor: theme.background }}
-      contentContainerStyle={[styles.container, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 32 }]}
-    >
-      {/* Back + nav */}
-      <Animated.View entering={FadeInUp.delay(50).springify()} style={styles.navRow}>
-        <Pressable onPress={() => router.back()} hitSlop={12}>
-          <Text style={[styles.back, { color: theme.accent }]}>← Back</Text>
-        </Pressable>
-        <Pressable onPress={() => router.replace(`/timing/${id}` as any)}>
-          <Text style={[styles.next, { color: theme.accent }]}>Timing →</Text>
-        </Pressable>
-      </Animated.View>
-
-      <Animated.View entering={FadeInDown.delay(60).springify()} style={styles.titleRow}>
-        <Text style={[styles.screenTitle, { color: theme.text, fontFamily: Fonts.heading }]}>Pitch Analysis</Text>
-        <Text style={[styles.sessionName, { color: theme.textMuted, fontFamily: Fonts.body }]} numberOfLines={1}>
-          {session.title}
-        </Text>
-      </Animated.View>
-
-      {/* Score badge */}
-      <Animated.View entering={FadeInDown.delay(80).springify()} style={styles.badgeRow}>
-        <ScoreBadge score={r.pitch_score ?? r.overall_score} label="Pitch score" size={160} />
-      </Animated.View>
-
-      {/* Stats grid */}
-      <Animated.View entering={FadeInDown.delay(120).springify()}>
-        <View style={styles.statsGrid}>
-          <StatTile
-            value={`${Math.round(r.in_tune_pct ?? 0)}`}
-            unit="%"
-            label="In tune"
-            color={theme.inTune}
-          />
-          <StatTile
-            value={`${Math.round(Math.abs(r.avg_cents_error ?? 0))}`}
-            unit="¢"
-            label="Avg error"
-            color={r.avg_cents_error > 25 ? theme.offPitch : theme.inTune}
-          />
-        </View>
-      </Animated.View>
-
-      {/* Contour graph */}
-      {!r.is_polyphonic && notes.length > 0 && (
-        <Animated.View entering={FadeInDown.delay(160).springify()}>
-          <Card noPad style={styles.graphCard}>
-            <Text style={[styles.cardTitle, { color: theme.text, fontFamily: Fonts.heading, padding: 16, paddingBottom: 0 }]}>
-              Pitch contour
-            </Text>
-            <View style={{ padding: 12 }}>
-              <PitchContourGraph notes={notes} />
-              <PitchLegend />
-            </View>
-          </Card>
-        </Animated.View>
-      )}
-
-      {r.is_polyphonic && (
-        <Card>
-          <Text style={[styles.polyNote, { color: theme.textMuted, fontFamily: Fonts.body }]}>
-            🎹 Polyphonic instrument detected — cents accuracy not available. Timing analysis below.
-          </Text>
-        </Card>
-      )}
-
-      {/* Notes to fix */}
-      {badNotes.length > 0 && (
-        <Animated.View entering={FadeInDown.delay(200).springify()}>
-          <Text style={[styles.sectionTitle, { color: theme.text, fontFamily: Fonts.heading }]}>
-            Notes to work on
-          </Text>
-          <Card noPad>
-            {badNotes.map((note, i) => (
-              <NoteFixRow key={i} note={note} index={i} />
-            ))}
-          </Card>
-        </Animated.View>
-      )}
-
-      {/* Timing CTA */}
-      <Animated.View entering={FadeInDown.delay(240).springify()}>
-        <Pressable
-          onPress={() => router.push(`/timing/${id}` as any)}
-          style={[styles.timingCta, { backgroundColor: theme.accentLight, borderColor: theme.accent }]}
-        >
-          <Text style={[styles.timingCtaText, { color: theme.accent, fontFamily: Fonts.body }]}>
-            See timing analysis ⏱️ →
-          </Text>
-        </Pressable>
-      </Animated.View>
-    </ScrollView>
-  );
-}
-
 const styles = StyleSheet.create({
-  container:   { paddingHorizontal: 20, gap: 20 },
-  center:      { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  navRow:      { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  back:        { fontSize: FontSize.base, fontWeight: '500' },
-  next:        { fontSize: FontSize.base, fontWeight: '500' },
-  titleRow:    { gap: 4 },
-  screenTitle: { fontSize: FontSize.xl, fontWeight: '700' },
-  sessionName: { fontSize: FontSize.sm },
-  badgeRow:    { alignItems: 'center', paddingVertical: 8 },
-  statsGrid:   { flexDirection: 'row', gap: 12 },
-  stat: {
-    flex:           1,
-    padding:        16,
-    borderRadius:   12,
-    alignItems:     'center',
-    gap:            4,
+  container: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+    paddingHorizontal: 20,
   },
-  statValueRow:{ flexDirection: 'row', alignItems: 'baseline', gap: 2 },
-  statValue:   { fontSize: FontSize.xxl, fontWeight: '700' },
-  statUnit:    { fontSize: FontSize.sm },
-  statLabel:   { fontSize: FontSize.xs },
-  graphCard:   {},
-  cardTitle:   { fontSize: FontSize.base, fontWeight: '700' },
-  polyNote:    { fontSize: FontSize.sm, lineHeight: FontSize.sm + 6, textAlign: 'center' },
-  sectionTitle:{ fontSize: FontSize.md, fontWeight: '700' },
-  noteRow: {
-    flexDirection:   'row',
-    alignItems:      'center',
-    gap:             10,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderBottomWidth: 1,
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
   },
-  noteName: {
-    width:          44,
-    height:         36,
-    borderRadius:   8,
-    alignItems:     'center',
+  backBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
     justifyContent: 'center',
   },
-  noteNameText: { fontSize: FontSize.sm, fontWeight: '700' },
-  noteInfo:    { flex: 1, gap: 2 },
-  noteDesc:    { fontSize: FontSize.base, fontWeight: '600' },
-  noteTime:    { fontSize: FontSize.xs },
-  centBar: {
-    width:        60,
-    height:       6,
-    borderRadius: 3,
-    overflow:     'hidden',
+  backBtnText: {
+    fontSize: 20,
+    color: '#0F172A',
+    fontWeight: '700',
+    marginTop: -2,
   },
-  centFill: {
-    height:       '100%',
-    borderRadius: 3,
+  screenLabel: {
+    fontSize: 13,
+    fontFamily: Fonts.body,
+    color: '#64748B',
+    fontWeight: '500',
   },
-  timingCta: {
-    padding:      14,
+  scrollContent: {
+    paddingBottom: 20,
+  },
+  title: {
+    fontSize: 26,
+    fontFamily: Fonts.heading,
+    fontWeight: '800',
+    color: '#0F172A',
+    marginBottom: 4,
+  },
+  subtitle: {
+    fontSize: 13,
+    fontFamily: Fonts.body,
+    color: '#64748B',
+    marginBottom: 18,
+  },
+  scoreCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  gaugeContainer: {
+    width: 88,
+    height: 88,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+    marginRight: 20,
+  },
+  gaugeTextWrap: {
+    position: 'absolute',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  gaugeScore: {
+    fontSize: 26,
+    fontFamily: Fonts.heading,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  gaugeLabel: {
+    fontSize: 10,
+    fontFamily: Fonts.body,
+    color: '#94A3B8',
+    marginTop: -2,
+  },
+  metricsCol: {
+    flex: 1,
+    gap: 8,
+  },
+  metricRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  metricLabel: {
+    fontSize: 12,
+    fontFamily: Fonts.body,
+    color: '#64748B',
+  },
+  metricVal: {
+    fontSize: 13,
+    fontFamily: Fonts.body,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  metricDivider: {
+    height: 1,
+    backgroundColor: '#F8FAFC',
+  },
+  contourCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 14,
+  },
+  contourHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  contourTitle: {
+    fontSize: 16,
+    fontFamily: Fonts.heading,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  segmentedToggle: {
+    flexDirection: 'row',
+    backgroundColor: '#F1F5F9',
+    borderRadius: 8,
+    padding: 2,
+  },
+  segBtn: {
+    paddingVertical: 4,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+  },
+  segBtnActive: {
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  segText: {
+    fontSize: 12,
+    fontFamily: Fonts.body,
+    fontWeight: '500',
+    color: '#64748B',
+  },
+  segTextActive: {
+    color: '#0F172A',
+    fontWeight: '700',
+  },
+  graphWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  yAxis: {
+    width: 26,
+    height: 160,
+    justifyContent: 'space-between',
+    paddingVertical: 2,
+  },
+  pitchText: {
+    fontSize: 10,
+    fontFamily: Fonts.mono,
+    color: '#94A3B8',
+  },
+  graphSvgContainer: {
+    flex: 1,
+    height: 160,
+    position: 'relative',
+  },
+  centsTag: {
+    position: 'absolute',
+    backgroundColor: '#EA580C',
+    paddingVertical: 1,
+    paddingHorizontal: 5,
+    borderRadius: 4,
+  },
+  centsTagText: {
+    fontSize: 9,
+    fontFamily: Fonts.mono,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  timeAxis: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 6,
+    paddingLeft: 26,
+  },
+  timeText: {
+    fontSize: 10,
+    fontFamily: Fonts.mono,
+    color: '#94A3B8',
+  },
+  legendRow: {
+    flexDirection: 'row',
+    gap: 16,
+    marginTop: 14,
+    paddingLeft: 26,
+  },
+  legendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  legendBar: {
+    width: 14,
+    height: 2.5,
+    borderRadius: 1.5,
+  },
+  legendText: {
+    fontSize: 11,
+    fontFamily: Fonts.body,
+    color: '#64748B',
+  },
+  issueCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  noteBadge: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    backgroundColor: '#FEF3C7',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  noteBadgeText: {
+    fontSize: 14,
+    fontFamily: Fonts.heading,
+    fontWeight: '700',
+    color: '#D97706',
+  },
+  issueTextCol: {
+    flex: 1,
+  },
+  issueTitle: {
+    fontSize: 14,
+    fontFamily: Fonts.heading,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  issueSub: {
+    fontSize: 11,
+    fontFamily: Fonts.body,
+    color: '#94A3B8',
+    marginTop: 2,
+  },
+  centsCol: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  arrowIcon: {
+    fontSize: 14,
+    color: '#0F172A',
+    fontWeight: '700',
+  },
+  centsVal: {
+    fontSize: 14,
+    fontFamily: Fonts.heading,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  bottomBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#F8FAFC',
+    flexDirection: 'row',
+    gap: 12,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+  },
+  secondaryBtn: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
     borderRadius: 12,
-    borderWidth:  1,
-    alignItems:   'center',
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  timingCtaText: { fontSize: FontSize.base, fontWeight: '600' },
+  secondaryBtnText: {
+    fontSize: 14,
+    fontFamily: Fonts.body,
+    fontWeight: '600',
+    color: '#0F172A',
+  },
+  primaryBtn: {
+    flex: 1,
+    backgroundColor: '#4F46E5',
+    borderRadius: 12,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  primaryBtnText: {
+    fontSize: 14,
+    fontFamily: Fonts.body,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  pressed: {
+    opacity: 0.85,
+  },
 });

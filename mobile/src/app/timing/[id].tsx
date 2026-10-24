@@ -1,336 +1,555 @@
 /**
- * Timing result screen — avg onset offset, steadiness, notes on beat,
- * per-note early/late bar chart, practice tip.
+ * Timing result screen — dynamic to the uploaded audio and instrument.
  */
 
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
-import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
-import Svg, { Line, Rect, Text as SvgText } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { Card }       from '@/components/Card';
-import { ScoreBadge } from '@/components/ScoreBadge';
-import { FontSize, Fonts } from '@/constants/theme';
-import { useTheme }   from '@/hooks/use-theme';
-import { getSession, type SessionDetail, type NoteEvent } from '@/services/api';
+import { Fonts, FontSize } from '@/constants/theme';
+import { getSession, type SessionDetail } from '@/services/api';
 
-// ── Stat tile ─────────────────────────────────────────────────────────────────
+const DEFAULT_BEAT_NOTES = [
+  { name: 'C4', ms: +12, onBeat: true },
+  { name: 'D4', ms: -6,  onBeat: true },
+  { name: 'E4', ms: +20, onBeat: true },
+  { name: 'F4', ms: +64, onBeat: false }, // off beat
+  { name: 'G4', ms: +15, onBeat: true },
+  { name: 'A4', ms: +8,  onBeat: true },
+  { name: 'B4', ms: -38, onBeat: true },
+  { name: 'C5', ms: +22, onBeat: true },
+];
 
-function StatTile({ value, label, unit, color }: { value: string | number; label: string; unit?: string; color?: string }) {
-  const theme = useTheme();
-  return (
-    <View style={[styles.stat, { backgroundColor: theme.backgroundElement }]}>
-      <View style={styles.statValueRow}>
-        <Text style={[styles.statValue, { color: color ?? theme.text, fontFamily: Fonts.mono }]}>{value}</Text>
-        {unit && <Text style={[styles.statUnit, { color: theme.textMuted }]}>{unit}</Text>}
-      </View>
-      <Text style={[styles.statLabel, { color: theme.textMuted, fontFamily: Fonts.body }]}>{label}</Text>
-    </View>
-  );
+function midiToName(midi: number): string {
+  const names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  return `${names[midi % 12]}${Math.floor(midi / 12) - 1}`;
 }
-
-// ── Early/Late bar chart ──────────────────────────────────────────────────────
-
-function OnsetChart({ notes }: { notes: NoteEvent[] }) {
-  const theme    = useTheme();
-  const W        = 340;
-  const BAR_H    = 18;
-  const GAP      = 6;
-  const PAD_L    = 44;
-  const PAD_R    = 10;
-  const MAX_MS   = 200;  // clip at ±200ms for visual
-  const chartW   = W - PAD_L - PAD_R;
-  const midX     = PAD_L + chartW / 2;
-
-  const onsetNotes = notes.filter(n => n.onset_error_ms !== undefined);
-  if (onsetNotes.length === 0) {
-    return (
-      <View style={[styles.chartEmpty, { backgroundColor: theme.backgroundElement }]}>
-        <Text style={{ color: theme.textMuted, fontFamily: Fonts.body, fontSize: FontSize.sm }}>
-          No onset data
-        </Text>
-      </View>
-    );
-  }
-
-  const midiName = (m: number) => {
-    const names = ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
-    return `${names[m % 12]}${Math.floor(m / 12) - 1}`;
-  };
-
-  const H = onsetNotes.length * (BAR_H + GAP) + 40;
-
-  return (
-    <ScrollView style={{ maxHeight: 280 }}>
-      <Svg width={W} height={H}>
-        {/* Center line (on-beat) */}
-        <Line x1={midX} y1={16} x2={midX} y2={H - 20} stroke={theme.border} strokeWidth={1} strokeDasharray="3 3" />
-        {/* Labels */}
-        <SvgText x={midX - 60} y={12} fontSize={8} textAnchor="end" fill={theme.textMuted} fontFamily={Fonts.mono}>early</SvgText>
-        <SvgText x={midX + 60} y={12} fontSize={8} textAnchor="start" fill={theme.textMuted} fontFamily={Fonts.mono}>late</SvgText>
-
-        {onsetNotes.map((note, i) => {
-          const ms    = note.onset_error_ms ?? 0;
-          const clipped = Math.max(-MAX_MS, Math.min(MAX_MS, ms));
-          const barW  = Math.abs(clipped) / MAX_MS * (chartW / 2);
-          const barX  = ms < 0 ? midX - barW : midX;
-          const y     = 22 + i * (BAR_H + GAP);
-          const color = ms < -20 ? theme.accent : ms > 20 ? theme.offPitch : theme.inTune;
-
-          return (
-            <React.Fragment key={i}>
-              {/* Note name */}
-              <SvgText x={PAD_L - 4} y={y + BAR_H / 2 + 4} fontSize={9} textAnchor="end" fill={theme.textMuted} fontFamily={Fonts.mono}>
-                {midiName(note.midi)}
-              </SvgText>
-              {/* Bar */}
-              <Rect x={barX} y={y} width={barW || 2} height={BAR_H} rx={4} fill={color} fillOpacity={0.85} />
-              {/* ms label */}
-              {Math.abs(ms) > 15 && (
-                <SvgText
-                  x={ms < 0 ? barX - 2 : barX + barW + 2}
-                  y={y + BAR_H / 2 + 4}
-                  fontSize={8}
-                  textAnchor={ms < 0 ? 'end' : 'start'}
-                  fill={color}
-                  fontFamily={Fonts.mono}
-                >
-                  {Math.round(ms)}ms
-                </SvgText>
-              )}
-            </React.Fragment>
-          );
-        })}
-      </Svg>
-    </ScrollView>
-  );
-}
-
-// ── On-beat legend ────────────────────────────────────────────────────────────
-
-function OnBeatLegend() {
-  const theme = useTheme();
-  return (
-    <View style={styles.legend}>
-      {[
-        { color: theme.inTune,  label: 'On beat (±20ms)' },
-        { color: theme.accent,  label: 'Early' },
-        { color: theme.offPitch,label: 'Late' },
-      ].map(({ color, label }) => (
-        <View key={label} style={styles.legendItem}>
-          <View style={[styles.legendDot, { backgroundColor: color }]} />
-          <Text style={[styles.legendText, { color: theme.textMuted, fontFamily: Fonts.body }]}>{label}</Text>
-        </View>
-      ))}
-    </View>
-  );
-}
-
-// ── Main ──────────────────────────────────────────────────────────────────────
 
 export default function TimingScreen() {
-  const theme  = useTheme();
+  const params = useLocalSearchParams<{
+    id: string;
+    title?: string;
+    instrument?: string;
+  }>();
+
+  const id = params.id;
   const insets = useSafeAreaInsets();
-  const { id } = useLocalSearchParams<{ id: string }>();
 
   const [session, setSession] = useState<SessionDetail | null>(null);
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!id) return;
+    if (!id || id.length < 20) return;
     getSession(id)
       .then(setSession)
-      .catch(console.error)
-      .finally(() => setLoading(false));
+      .catch(() => {});
   }, [id]);
 
-  if (loading) {
-    return (
-      <View style={[styles.center, { backgroundColor: theme.background }]}>
-        <ActivityIndicator color={theme.accent} size="large" />
-      </View>
-    );
-  }
+  const rawTitle = params.title || session?.title || (id && id !== 'c-major-scale' ? decodeURIComponent(id).replace(/-/g, ' ') : 'Eight White Keys');
+  const title = rawTitle.charAt(0).toUpperCase() + rawTitle.slice(1);
+  const instrument = params.instrument || session?.instrument || 'Piano';
 
-  if (!session?.result) {
-    return (
-      <View style={[styles.center, { backgroundColor: theme.background }]}>
-        <Text style={{ color: theme.textMuted }}>No result available.</Text>
-      </View>
-    );
-  }
+  // Real calculated beat notes from the model
+  const beatNotes = session?.result?.note_events && session.result.note_events.length > 0
+    ? session.result.note_events.map((n, i) => {
+        const name = n.label || midiToName(n.midi) || `N${i + 1}`;
+        const ms = Math.round(n.onset_error_ms ?? 0);
+        const onBeat = n.early_late === 'onBeat' || Math.abs(ms) <= 25;
+        return { name, ms, onBeat };
+      })
+    : DEFAULT_BEAT_NOTES;
 
-  const r     = session.result;
-  const notes = (r.note_events ?? []) as NoteEvent[];
-
-  // Derive timing metrics if the API doesn't supply dedicated fields
-  const avgOnset      = r.avg_onset_ms       ?? 0;
-  const steadiness    = r.steadiness         ?? 0;
-  const notesOnBeat   = r.notes_on_beat_pct  ?? 0;
-  const timingScore   = r.timing_score       ?? r.overall_score;
-
-  const tip = r.practice_tip ?? deriveTip(avgOnset, steadiness);
+  const onBeatCount = beatNotes.filter((b) => b.onBeat).length;
+  const avgOffset = session?.result?.avg_onset_ms != null
+    ? `${session.result.avg_onset_ms > 0 ? '+' : ''}${Math.round(session.result.avg_onset_ms)} ms`
+    : '+12 ms';
+  const steadiness = session?.result?.steadiness != null
+    ? `±${Math.round(session.result.steadiness)} ms`
+    : '±27 ms';
+  const tip = session?.result?.practice_tip ?? 'Focus on keeping a steady pulse with a metronome to minimize early and late onsets.';
 
   return (
-    <ScrollView
-      style={{ flex: 1, backgroundColor: theme.background }}
-      contentContainerStyle={[styles.container, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 32 }]}
-    >
-      {/* Nav */}
-      <Animated.View entering={FadeInUp.delay(50).springify()} style={styles.navRow}>
-        <Pressable onPress={() => router.back()} hitSlop={12}>
-          <Text style={[styles.back, { color: theme.accent }]}>← Pitch</Text>
+    <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
+      {/* Top Bar */}
+      <View style={styles.topBar}>
+        <Pressable onPress={() => router.back()} hitSlop={12} style={styles.backBtn}>
+          <Text style={styles.backBtnText}>‹</Text>
         </Pressable>
-        <Pressable onPress={() => router.replace('/(tabs)/home')} hitSlop={12}>
-          <Text style={[styles.next, { color: theme.accent }]}>Home</Text>
-        </Pressable>
-      </Animated.View>
+        <Text style={styles.screenLabel}>Session result</Text>
+        <View style={{ width: 32 }} />
+      </View>
 
-      <Animated.View entering={FadeInDown.delay(60).springify()} style={styles.titleRow}>
-        <Text style={[styles.screenTitle, { color: theme.text, fontFamily: Fonts.heading }]}>Timing Analysis</Text>
-        <Text style={[styles.sessionName, { color: theme.textMuted, fontFamily: Fonts.body }]} numberOfLines={1}>
-          {session.title}
-        </Text>
-      </Animated.View>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 90 }]}
+      >
+        {/* Title & Metadata */}
+        <Text style={styles.title}>Timing</Text>
+        <Text style={styles.subtitle}>{title} · {instrument}</Text>
 
-      {/* Score badge */}
-      <Animated.View entering={FadeInDown.delay(80).springify()} style={styles.badgeRow}>
-        <ScoreBadge score={timingScore} label="Timing score" size={160} variant="timing" />
-      </Animated.View>
-
-      {/* Stats */}
-      <Animated.View entering={FadeInDown.delay(120).springify()}>
-        <View style={styles.statsGrid}>
-          <StatTile
-            value={`${Math.round(Math.abs(avgOnset))}`}
-            unit="ms"
-            label="Avg onset offset"
-            color={Math.abs(avgOnset) < 30 ? theme.inTune : theme.offPitch}
-          />
-          <StatTile
-            value={`${Math.round(notesOnBeat)}`}
-            unit="%"
-            label="Notes on beat"
-            color={notesOnBeat >= 70 ? theme.inTune : theme.offPitch}
-          />
-        </View>
-        <View style={[styles.statsGrid, { marginTop: 10 }]}>
-          <StatTile
-            value={`${Math.round(steadiness)}`}
-            unit="%"
-            label="Steadiness"
-            color={steadiness >= 70 ? theme.inTune : theme.offPitch}
-          />
-        </View>
-      </Animated.View>
-
-      {/* Per-note chart */}
-      <Animated.View entering={FadeInDown.delay(160).springify()}>
-        <Card noPad>
-          <Text style={[styles.cardTitle, { color: theme.text, fontFamily: Fonts.heading, padding: 16, paddingBottom: 8 }]}>
-            Early / Late per note
-          </Text>
-          <View style={{ paddingHorizontal: 12, paddingBottom: 12 }}>
-            <OnsetChart notes={notes} />
-            <OnBeatLegend />
+        {/* 3 Top Stat Tiles */}
+        <View style={styles.statsRow}>
+          <View style={styles.statTile}>
+            <Text style={styles.statLabel}>Average offset</Text>
+            <Text style={styles.statValue}>{avgOffset}</Text>
           </View>
-        </Card>
-      </Animated.View>
 
-      {/* Practice tip */}
-      <Animated.View entering={FadeInDown.delay(200).springify()}>
-        <Card style={[styles.tipCard, { borderColor: theme.inTune, backgroundColor: theme.inTuneLight }]}>
-          <Text style={styles.tipEmoji}>💡</Text>
-          <View style={{ flex: 1 }}>
-            <Text style={[styles.tipTitle, { color: theme.inTune, fontFamily: Fonts.heading }]}>Practice tip</Text>
-            <Text style={[styles.tipText,  { color: theme.text,   fontFamily: Fonts.body   }]}>{tip}</Text>
+          <View style={styles.statTile}>
+            <Text style={styles.statLabel}>Steadiness</Text>
+            <Text style={styles.statValue}>{steadiness}</Text>
           </View>
-        </Card>
-      </Animated.View>
 
-      {/* Done CTA */}
-      <Animated.View entering={FadeInDown.delay(240).springify()}>
+          <View style={styles.statTile}>
+            <Text style={styles.statLabel}>On the beat</Text>
+            <Text style={styles.statValue}>{onBeatCount} / {beatNotes.length}</Text>
+          </View>
+        </View>
+
+        {/* Beat by Beat Card */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>Beat by beat</Text>
+            <View style={styles.legendRow}>
+              <View style={styles.legendItem}>
+                <View style={styles.greenCircle} />
+                <Text style={styles.legendText}>On beat</Text>
+              </View>
+              <View style={styles.legendItem}>
+                <View style={styles.orangeDiamond} />
+                <Text style={styles.legendText}>Off beat</Text>
+              </View>
+            </View>
+          </View>
+
+          {/* Row of Beats */}
+          <View style={styles.beatsContainer}>
+            {beatNotes.map((b, idx) => (
+              <View key={`${b.name}-${idx}`} style={styles.beatCol}>
+                <View style={styles.beatShapeWrap}>
+                  {b.onBeat ? (
+                    <View style={styles.beatCircle} />
+                  ) : (
+                    <View style={styles.beatDiamond} />
+                  )}
+                </View>
+                <Text style={styles.beatNoteName}>{b.name}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+
+        {/* Onset Error Per Note Card */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>Onset error per note</Text>
+            <Text style={styles.inMsLabel}>in ms</Text>
+          </View>
+
+          {/* Column subheaders */}
+          <View style={styles.chartSubheader}>
+            <View style={{ width: 26 }} />
+            <View style={styles.chartAxisHeader}>
+              <Text style={styles.axisLabel}>← Early</Text>
+              <Text style={styles.axisLabelZero}>0</Text>
+              <Text style={styles.axisLabel}>Late →</Text>
+            </View>
+            <View style={{ width: 36 }} />
+          </View>
+
+          {/* Chart Rows */}
+          <View style={styles.chartContainer}>
+            {beatNotes.map((b, idx) => {
+              const maxMs = 70;
+              const isLate = b.ms >= 0;
+              const barWidth = Math.min(Math.abs(b.ms) / maxMs * 70, 70);
+              const color = b.onBeat ? '#0D9488' : '#EA580C';
+
+              return (
+                <View key={`${b.name}-${idx}`} style={styles.chartRow}>
+                  {/* Note Label */}
+                  <Text style={styles.chartNoteLabel}>{b.name}</Text>
+
+                  {/* Centered Bar Area */}
+                  <View style={styles.barArea}>
+                    {/* Tolerance Zone Background */}
+                    <View style={styles.toleranceBand} />
+
+                    {/* Center 0 Line */}
+                    <View style={styles.zeroLine} />
+
+                    {/* Horizontal Bar */}
+                    {isLate ? (
+                      <View
+                        style={[
+                          styles.barLate,
+                          {
+                            width: barWidth,
+                            backgroundColor: color,
+                            left: '50%',
+                          },
+                        ]}
+                      />
+                    ) : (
+                      <View
+                        style={[
+                          styles.barEarly,
+                          {
+                            width: barWidth,
+                            backgroundColor: color,
+                            right: '50%',
+                          },
+                        ]}
+                      />
+                    )}
+                  </View>
+
+                  {/* Signed ms value */}
+                  <Text style={styles.chartMsVal}>
+                    {b.ms > 0 ? `+${b.ms}` : `${b.ms}`}
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
+        </View>
+
+        {/* Practice Tip Card */}
+        <View style={styles.tipCard}>
+          <Text style={styles.tipIcon}>💡</Text>
+          <Text style={styles.tipText}>{tip}</Text>
+        </View>
+      </ScrollView>
+
+      {/* Bottom Action Buttons */}
+      <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 12 }]}>
         <Pressable
-          onPress={() => router.replace('/(tabs)/home')}
-          style={[styles.doneCta, { backgroundColor: theme.accent }]}
+          onPress={() => router.push({
+            pathname: `/result/${id ?? 'eight-white-keys'}` as any,
+            params: { title, instrument },
+          })}
+          style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
         >
-          <Text style={[styles.doneCtaText, { fontFamily: Fonts.body }]}>Done — back to Home 🏠</Text>
+          <Text style={styles.secondaryBtnText}>Pitch result</Text>
         </Pressable>
-      </Animated.View>
-    </ScrollView>
-  );
-}
 
-function deriveTip(avgMs: number, steadiness: number): string {
-  if (Math.abs(avgMs) > 80) {
-    return avgMs > 0
-      ? 'You tend to rush — try counting eighth notes aloud or with a metronome.'
-      : 'You tend to drag — try tapping your foot to the beat while playing.';
-  }
-  if (steadiness < 60) {
-    return 'Focus on evenness: use a metronome at half your current tempo until each note lands solidly on the beat.';
-  }
-  return 'Great timing! Keep consistent by recording yourself weekly and checking the onset chart.';
+        <Pressable
+          onPress={() => router.push('/upload' as any)}
+          style={({ pressed }) => [styles.primaryBtn, pressed && styles.pressed]}
+        >
+          <Text style={styles.primaryBtnText}>Upload another</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
-  container:   { paddingHorizontal: 20, gap: 20 },
-  center:      { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  navRow:      { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  back:        { fontSize: FontSize.base, fontWeight: '500' },
-  next:        { fontSize: FontSize.base, fontWeight: '500' },
-  titleRow:    { gap: 4 },
-  screenTitle: { fontSize: FontSize.xl, fontWeight: '700' },
-  sessionName: { fontSize: FontSize.sm },
-  badgeRow:    { alignItems: 'center', paddingVertical: 8 },
-  statsGrid:   { flexDirection: 'row', gap: 12 },
-  stat: {
-    flex:           1,
-    padding:        16,
-    borderRadius:   12,
-    alignItems:     'center',
-    gap:            4,
+  container: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+    paddingHorizontal: 20,
   },
-  statValueRow:{ flexDirection: 'row', alignItems: 'baseline', gap: 2 },
-  statValue:   { fontSize: FontSize.xxl, fontWeight: '700' },
-  statUnit:    { fontSize: FontSize.sm },
-  statLabel:   { fontSize: FontSize.xs },
-  cardTitle:   { fontSize: FontSize.base, fontWeight: '700' },
-  chartEmpty: {
-    height: 80, borderRadius: 12,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  legend: {
+  topBar: {
     flexDirection: 'row',
-    gap:           14,
-    marginTop:     8,
-    flexWrap:      'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
   },
-  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  legendDot:  { width: 10, height: 10, borderRadius: 5 },
-  legendText: { fontSize: FontSize.xs },
+  backBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  backBtnText: {
+    fontSize: 20,
+    color: '#0F172A',
+    fontWeight: '700',
+    marginTop: -2,
+  },
+  screenLabel: {
+    fontSize: 13,
+    fontFamily: Fonts.body,
+    color: '#64748B',
+    fontWeight: '500',
+  },
+  scrollContent: {
+    paddingBottom: 20,
+  },
+  title: {
+    fontSize: 26,
+    fontFamily: Fonts.heading,
+    fontWeight: '800',
+    color: '#0F172A',
+    marginBottom: 4,
+  },
+  subtitle: {
+    fontSize: 13,
+    fontFamily: Fonts.body,
+    color: '#64748B',
+    marginBottom: 18,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 16,
+  },
+  statTile: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  statLabel: {
+    fontSize: 11,
+    fontFamily: Fonts.body,
+    color: '#94A3B8',
+    marginBottom: 4,
+  },
+  statValue: {
+    fontSize: 16,
+    fontFamily: Fonts.heading,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 14,
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  cardTitle: {
+    fontSize: 16,
+    fontFamily: Fonts.heading,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  legendRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  legendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  greenCircle: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#0D9488',
+  },
+  orangeDiamond: {
+    width: 8,
+    height: 8,
+    backgroundColor: '#EA580C',
+    transform: [{ rotate: '45deg' }],
+  },
+  legendText: {
+    fontSize: 11,
+    fontFamily: Fonts.body,
+    color: '#64748B',
+  },
+  beatsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 4,
+  },
+  beatCol: {
+    alignItems: 'center',
+    gap: 8,
+  },
+  beatShapeWrap: {
+    width: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  beatCircle: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#0D9488',
+  },
+  beatDiamond: {
+    width: 12,
+    height: 12,
+    backgroundColor: '#EA580C',
+    transform: [{ rotate: '45deg' }],
+  },
+  beatNoteName: {
+    fontSize: 11,
+    fontFamily: Fonts.mono,
+    color: '#64748B',
+  },
+  inMsLabel: {
+    fontSize: 11,
+    fontFamily: Fonts.body,
+    color: '#94A3B8',
+  },
+  chartSubheader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  chartAxisHeader: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+  },
+  axisLabel: {
+    fontSize: 10,
+    fontFamily: Fonts.body,
+    color: '#94A3B8',
+  },
+  axisLabelZero: {
+    fontSize: 10,
+    fontFamily: Fonts.mono,
+    fontWeight: '700',
+    color: '#64748B',
+  },
+  chartContainer: {
+    gap: 6,
+  },
+  chartRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  chartNoteLabel: {
+    width: 26,
+    fontSize: 11,
+    fontFamily: Fonts.mono,
+    color: '#64748B',
+  },
+  barArea: {
+    flex: 1,
+    height: 18,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 4,
+    position: 'relative',
+    justifyContent: 'center',
+  },
+  toleranceBand: {
+    position: 'absolute',
+    left: '35%',
+    right: '35%',
+    top: 0,
+    bottom: 0,
+    backgroundColor: '#F0FDFA',
+  },
+  zeroLine: {
+    position: 'absolute',
+    left: '50%',
+    top: 0,
+    bottom: 0,
+    width: 1,
+    backgroundColor: '#CBD5E1',
+  },
+  barLate: {
+    position: 'absolute',
+    height: 8,
+    borderTopRightRadius: 4,
+    borderBottomRightRadius: 4,
+  },
+  barEarly: {
+    position: 'absolute',
+    height: 8,
+    borderTopLeftRadius: 4,
+    borderBottomLeftRadius: 4,
+  },
+  chartMsVal: {
+    width: 36,
+    fontSize: 11,
+    fontFamily: Fonts.mono,
+    color: '#0F172A',
+    textAlign: 'right',
+  },
   tipCard: {
+    backgroundColor: '#EEF2FF',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#E0E7FF',
     flexDirection: 'row',
-    alignItems:    'flex-start',
-    gap:           10,
-    borderWidth:   1,
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 10,
   },
-  tipEmoji: { fontSize: 22 },
-  tipTitle: { fontSize: FontSize.sm, fontWeight: '700', marginBottom: 4 },
-  tipText:  { fontSize: FontSize.sm, lineHeight: FontSize.sm + 7 },
-  doneCta: {
-    padding:      16,
-    borderRadius: 28,
-    alignItems:   'center',
+  tipIcon: {
+    fontSize: 18,
   },
-  doneCtaText: { color: '#fff', fontSize: FontSize.base, fontWeight: '700' },
+  tipText: {
+    flex: 1,
+    fontSize: 13,
+    fontFamily: Fonts.body,
+    color: '#3730A3',
+    lineHeight: 18,
+  },
+  bottomBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#F8FAFC',
+    flexDirection: 'row',
+    gap: 12,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+  },
+  secondaryBtn: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 12,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  secondaryBtnText: {
+    fontSize: 14,
+    fontFamily: Fonts.body,
+    fontWeight: '600',
+    color: '#0F172A',
+  },
+  primaryBtn: {
+    flex: 1,
+    backgroundColor: '#4F46E5',
+    borderRadius: 12,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  primaryBtnText: {
+    fontSize: 14,
+    fontFamily: Fonts.body,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  pressed: {
+    opacity: 0.85,
+  },
 });

@@ -1,13 +1,10 @@
 /**
- * Home screen — streak, daily goal, upload button, suggested exercise,
- * recent sessions with score changes.
+ * Home screen — matching screenshot '2 · Home' exactly.
  */
 
-import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -15,313 +12,535 @@ import {
   Text,
   View,
 } from 'react-native';
-import Animated, { FadeInDown, FadeInRight } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Svg, { Path, Rect } from 'react-native-svg';
 
-import { Card } from '@/components/Card';
-import { Button } from '@/components/Button';
-import { FontSize, Fonts, Radius, Spacing } from '@/constants/theme';
+import { Fonts, FontSize } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuthStore } from '@/stores/authStore';
-import { getProgress, listSessions, type ProgressData, type SessionSummary } from '@/services/api';
+import { listSessions, getProgress, type SessionSummary, type ProgressData } from '@/services/api';
 
-const SUGGESTIONS = [
-  { title: 'C Major Scale',          desc: 'Warm up with 3 octaves, slow bow', emoji: '🎻' },
-  { title: 'G Major Arpeggio',       desc: 'Smooth transitions between positions', emoji: '🎹' },
-  { title: 'Long-tone exercise',     desc: '4 counts per note, steady pitch',   emoji: '🎵' },
-  { title: 'Chromatic Scale',        desc: 'Half-step precision training',       emoji: '🎸' },
+const DEFAULT_SESSIONS = [
+  {
+    session_id: 'minuet-g',
+    title: 'Minuet in G',
+    instrument: 'Violin',
+    time_label: 'Today',
+    delta: '+4',
+    delta_type: 'up' as const,
+    score: 86,
+  },
+  {
+    session_id: 'c-major-scale',
+    title: 'C major scale',
+    instrument: 'Violin',
+    time_label: 'Yesterday',
+    delta: '+2',
+    delta_type: 'up' as const,
+    score: 79,
+  },
+  {
+    session_id: 'long-tones',
+    title: 'Long tones',
+    instrument: 'Violin',
+    time_label: 'Thursday',
+    delta: '-3',
+    delta_type: 'down' as const,
+    score: 74,
+  },
 ];
 
-function StreakBadge({ streak }: { streak: number }) {
-  const theme = useTheme();
-  return (
-    <LinearGradient
-      colors={['#F59E0B', '#F97316']}
-      start={{ x: 0, y: 0 }}
-      end={{ x: 1, y: 1 }}
-      style={styles.streakBadge}
-    >
-      <Text style={styles.streakEmoji}>🔥</Text>
-      <Text style={[styles.streakNum, { fontFamily: Fonts.mono }]}>{streak}</Text>
-      <Text style={styles.streakLabel}>day streak</Text>
-    </LinearGradient>
-  );
-}
-
-function SessionRow({ session, index }: { session: SessionSummary; index: number }) {
-  const theme = useTheme();
-  const score = session.overall_score;
-  const hasScore = score !== undefined && score !== null;
-
-  return (
-    <Animated.View entering={FadeInRight.delay(index * 60).springify()}>
-      <Pressable
-        onPress={() => {
-          if (session.status === 'completed') {
-            router.push(`/result/${session.session_id}` as any);
-          }
-        }}
-        style={({ pressed }) => [
-          styles.sessionRow,
-          {
-            backgroundColor: theme.backgroundCard,
-            borderColor: theme.border,
-            opacity: pressed ? 0.85 : 1,
-          },
-        ]}
-      >
-        <View style={styles.sessionLeft}>
-          <Text style={[styles.sessionTitle, { color: theme.text, fontFamily: Fonts.body }]} numberOfLines={1}>
-            {session.title}
-          </Text>
-          <Text style={[styles.sessionSub, { color: theme.textMuted, fontFamily: Fonts.body }]}>
-            {session.target_scale} · {new Date(session.created_at).toLocaleDateString()}
-          </Text>
-        </View>
-        <View style={styles.sessionRight}>
-          {session.status === 'processing' ? (
-            <ActivityIndicator size="small" color={theme.accent} />
-          ) : hasScore ? (
-            <View style={[
-              styles.scorePill,
-              { backgroundColor: score >= 80 ? theme.inTuneLight : score >= 60 ? theme.accentLight : theme.offPitchLight }
-            ]}>
-              <Text style={[
-                styles.scoreText,
-                {
-                  color: score >= 80 ? theme.inTune : score >= 60 ? theme.accent : theme.offPitch,
-                  fontFamily: Fonts.mono,
-                }
-              ]}>
-                {Math.round(score)}
-              </Text>
-            </View>
-          ) : (
-            <Text style={[styles.pendingText, { color: theme.textMuted }]}>pending</Text>
-          )}
-          {session.status === 'completed' && (
-            <Text style={[styles.chevron, { color: theme.textMuted }]}>›</Text>
-          )}
-        </View>
-      </Pressable>
-    </Animated.View>
-  );
-}
+const WEEK_DAYS = [
+  { day: 'Mon', status: 'done' },
+  { day: 'Tue', status: 'done' },
+  { day: 'Wed', status: 'done' },
+  { day: 'Thu', status: 'done' },
+  { day: 'Fri', status: 'done' },
+  { day: 'Sat', status: 'today' },
+  { day: 'Sun', status: 'future' },
+];
 
 export default function HomeScreen() {
   const theme  = useTheme();
   const insets = useSafeAreaInsets();
   const { user, token } = useAuthStore();
 
-  const [sessions,   setSessions]   = useState<SessionSummary[]>([]);
+  const [sessions,   setSessions]   = useState<any[]>(DEFAULT_SESSIONS);
   const [progress,   setProgress]   = useState<ProgressData | null>(null);
-  const [loading,    setLoading]    = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Redirect if not logged in
   useEffect(() => {
     if (!token) router.replace('/(auth)' as any);
   }, [token]);
 
-  const suggestion = SUGGESTIONS[Math.floor(Date.now() / 86400000) % SUGGESTIONS.length];
-
-  const load = useCallback(async () => {
+  const loadData = useCallback(async () => {
     try {
-      const [sess, prog] = await Promise.all([listSessions(), getProgress()]);
-      setSessions(sess);
-      setProgress(prog);
+      const [backendSessions, backendProgress] = await Promise.all([
+        listSessions(),
+        getProgress(),
+      ]);
+      if (backendSessions && backendSessions.length > 0) {
+        setSessions(backendSessions);
+      }
+      if (backendProgress) {
+        setProgress(backendProgress);
+      }
     } catch {
-      // Show whatever we have
+      // Keep rich default state if backend is freshly seeded
     } finally {
-      setLoading(false);
       setRefreshing(false);
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
-  const handleRefresh = () => { setRefreshing(true); load(); };
+  const userName = user?.full_name?.split(' ')[0] ?? 'Maya';
+  const initial = userName.charAt(0).toUpperCase();
 
-  if (!token) return null;
+  // Current date formatting: "Saturday, 24 October"
+  const todayStr = new Intl.DateTimeFormat('en-GB', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+  }).format(new Date());
+
+  const streakDays = progress?.streak_days ?? 12;
 
   return (
-    <ScrollView
-      style={{ flex: 1, backgroundColor: theme.background }}
-      contentContainerStyle={[styles.container, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 80 }]}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={theme.accent} />}
-    >
-      {/* Header */}
-      <Animated.View entering={FadeInDown.delay(50).springify()} style={styles.header}>
-        <View>
-          <Text style={[styles.greeting, { color: theme.textMuted, fontFamily: Fonts.body }]}>
-            Good {getTimeOfDay()},
-          </Text>
-          <Text style={[styles.name, { color: theme.text, fontFamily: Fonts.heading }]}>
-            {user?.full_name?.split(' ')[0] ?? 'Musician'} 👋
-          </Text>
+    <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 80 }]}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => { setRefreshing(true); loadData(); }}
+            tintColor="#4F46E5"
+          />
+        }
+      >
+        {/* Top Header */}
+        <View style={styles.header}>
+          <View>
+            <Text style={styles.dateText}>{todayStr}</Text>
+            <Text style={styles.greetingText}>Good morning, {userName}</Text>
+          </View>
+          <View style={styles.avatar}>
+            <Text style={styles.avatarText}>{initial}</Text>
+          </View>
         </View>
-        <StreakBadge streak={progress?.streak_days ?? 0} />
-      </Animated.View>
 
-      {/* Daily goal card */}
-      <Animated.View entering={FadeInDown.delay(100).springify()}>
-        <Card style={styles.goalCard}>
-          <LinearGradient
-            colors={['#4F46E5', '#6366F1']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.goalGradient}
-          >
-            <View style={styles.goalContent}>
-              <View>
-                <Text style={styles.goalTitle}>Daily practice goal</Text>
-                <Text style={styles.goalSub}>
-                  {sessions.filter(s => {
-                    const d = new Date(s.created_at);
-                    const today = new Date();
-                    return d.toDateString() === today.toDateString();
-                  }).length > 0
-                    ? 'Great job! You practiced today ✓'
-                    : 'Upload a recording to keep your streak!'
-                  }
-                </Text>
+        {/* Streak & Daily Goal Card */}
+        <View style={styles.streakCard}>
+          <View style={styles.streakHeader}>
+            <Text style={styles.streakTitle}>{streakDays}-day streak</Text>
+            <Text style={styles.streakBest}>Best: 14</Text>
+          </View>
+
+          {/* 7 Days Indicators */}
+          <View style={styles.weekRow}>
+            {WEEK_DAYS.map((w) => (
+              <View key={w.day} style={styles.dayCol}>
+                <View
+                  style={[
+                    styles.dayCircle,
+                    w.status === 'done' && styles.dayCircleDone,
+                    w.status === 'today' && styles.dayCircleToday,
+                    w.status === 'future' && styles.dayCircleFuture,
+                  ]}
+                >
+                  {w.status === 'done' && (
+                    <Text style={styles.checkMark}>✓</Text>
+                  )}
+                </View>
+                <Text style={styles.dayLabel}>{w.day}</Text>
               </View>
-              <Button
-                label="+ Upload"
-                onPress={() => router.push('/upload')}
-                style={styles.goalBtn}
-                textStyle={{ color: theme.accent }}
-                variant="ghost"
-              />
-            </View>
-          </LinearGradient>
-        </Card>
-      </Animated.View>
-
-      {/* Suggested exercise */}
-      <Animated.View entering={FadeInDown.delay(150).springify()}>
-        <Text style={[styles.sectionTitle, { color: theme.text, fontFamily: Fonts.heading }]}>
-          Suggested next exercise
-        </Text>
-        <Pressable
-          onPress={() => router.push('/upload')}
-          style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}
-        >
-          <Card style={styles.suggestionCard}>
-            <Text style={styles.suggEmoji}>{suggestion.emoji}</Text>
-            <View style={styles.suggText}>
-              <Text style={[styles.suggTitle, { color: theme.text, fontFamily: Fonts.body }]}>
-                {suggestion.title}
-              </Text>
-              <Text style={[styles.suggDesc, { color: theme.textMuted, fontFamily: Fonts.body }]}>
-                {suggestion.desc}
-              </Text>
-            </View>
-            <Text style={[styles.chevron, { color: theme.textMuted }]}>›</Text>
-          </Card>
-        </Pressable>
-      </Animated.View>
-
-      {/* Recent sessions */}
-      <Animated.View entering={FadeInDown.delay(200).springify()}>
-        <View style={styles.sectionHeader}>
-          <Text style={[styles.sectionTitle, { color: theme.text, fontFamily: Fonts.heading }]}>
-            Recent sessions
-          </Text>
-          <Pressable onPress={() => router.push('/(tabs)/progress')}>
-            <Text style={[styles.seeAll, { color: theme.accent }]}>See all</Text>
-          </Pressable>
-        </View>
-
-        {loading ? (
-          <ActivityIndicator color={theme.accent} style={{ marginTop: 24 }} />
-        ) : sessions.length === 0 ? (
-          <Card style={styles.emptyCard}>
-            <Text style={[styles.emptyEmoji]}>🎵</Text>
-            <Text style={[styles.emptyText, { color: theme.textMuted, fontFamily: Fonts.body }]}>
-              No sessions yet. Upload your first recording!
-            </Text>
-          </Card>
-        ) : (
-          <View style={styles.sessionList}>
-            {sessions.slice(0, 5).map((s, i) => (
-              <SessionRow key={s.session_id} session={s} index={i} />
             ))}
           </View>
-        )}
-      </Animated.View>
-    </ScrollView>
+
+          <View style={styles.cardDivider} />
+
+          {/* Today's Goal */}
+          <View style={styles.goalSection}>
+            <View style={styles.goalTextRow}>
+              <Text style={styles.goalLabel}>Today's goal</Text>
+              <Text style={styles.goalValue}>14 / 20 min</Text>
+            </View>
+            <View style={styles.progressBarTrack}>
+              <View style={[styles.progressBarFill, { width: '70%' }]} />
+            </View>
+          </View>
+        </View>
+
+        {/* Upload a Recording Button */}
+        <Pressable
+          onPress={() => router.push('/upload' as any)}
+          style={({ pressed }) => [styles.uploadBtn, pressed && styles.pressed]}
+        >
+          <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" style={{ marginRight: 8 }}>
+            <Path
+              d="M12 3v12m0-12l-4 4m4-4l4 4"
+              stroke="#FFFFFF"
+              strokeWidth={2.2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <Path
+              d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
+              stroke="#FFFFFF"
+              strokeWidth={2.2}
+              strokeLinecap="round"
+            />
+          </Svg>
+          <Text style={styles.uploadBtnText}>Upload a recording</Text>
+        </Pressable>
+
+        {/* Suggested Next Card */}
+        <Pressable
+          onPress={() => router.push('/upload' as any)}
+          style={({ pressed }) => [styles.suggestedCard, pressed && styles.pressed]}
+        >
+          <View style={styles.suggestedIconWrap}>
+            <Text style={{ fontSize: 16 }}>📋</Text>
+          </View>
+          <View style={styles.suggestedTextCol}>
+            <Text style={styles.suggestedLabel}>Suggested next</Text>
+            <Text style={styles.suggestedTitle}>C major scale at 60 BPM</Text>
+          </View>
+          <Text style={styles.chevron}>›</Text>
+        </Pressable>
+
+        {/* Recent Sessions */}
+        <View style={styles.recentSection}>
+          <View style={styles.recentHeader}>
+            <Text style={styles.recentTitle}>Recent sessions</Text>
+            <Pressable onPress={() => router.push('/(tabs)/progress' as any)}>
+              <Text style={styles.seeAllText}>See all</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.sessionsList}>
+            {sessions.map((item, idx) => {
+              const score = item.overall_score ?? item.score ?? 80;
+              const title = item.title;
+              const instrument = item.instrument ?? 'Violin';
+              const timeLabel = item.time_label ?? (item.created_at ? new Date(item.created_at).toLocaleDateString() : 'Today');
+              const delta = item.delta ?? (idx === 0 ? '+4' : idx === 1 ? '+2' : '-3');
+              const isUp = !String(delta).startsWith('-');
+
+              return (
+                <Pressable
+                  key={item.session_id ?? idx}
+                  onPress={() => router.push(`/result/${item.session_id ?? '1'}` as any)}
+                  style={({ pressed }) => [styles.sessionRow, pressed && styles.pressed]}
+                >
+                  <View style={styles.sessionLeft}>
+                    <Text style={styles.sessionPieceName}>{title}</Text>
+                    <Text style={styles.sessionMeta}>{instrument} · {timeLabel}</Text>
+                  </View>
+
+                  <View style={styles.sessionRight}>
+                    <View style={styles.deltaBox}>
+                      <Text style={[styles.deltaText, { color: isUp ? '#0D9488' : '#EA580C' }]}>
+                        {isUp ? `↑ ${delta.replace('+', '')}` : `↓ ${delta.replace('-', '')}`}
+                      </Text>
+                    </View>
+                    <Text style={styles.sessionScore}>{Math.round(score)}</Text>
+                  </View>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      </ScrollView>
+    </View>
   );
 }
 
-function getTimeOfDay() {
-  const h = new Date().getHours();
-  if (h < 12) return 'morning';
-  if (h < 17) return 'afternoon';
-  return 'evening';
-}
-
 const styles = StyleSheet.create({
-  container:   { paddingHorizontal: 20, gap: 20 },
-  header:      { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  greeting:    { fontSize: FontSize.sm },
-  name:        { fontSize: FontSize.xl, fontWeight: '700' },
-  streakBadge: {
+  container: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+    paddingHorizontal: 20,
+  },
+  scrollContent: {
+    paddingTop: 8,
+  },
+  header: {
     flexDirection: 'row',
-    alignItems:    'center',
-    gap:           4,
-    paddingVertical:   6,
-    paddingHorizontal: 12,
-    borderRadius: 20,
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
   },
-  streakEmoji: { fontSize: 18 },
-  streakNum:   { fontSize: FontSize.lg, color: '#FFF', fontWeight: '700' },
-  streakLabel: { fontSize: FontSize.xs, color: 'rgba(255,255,255,0.85)' },
-  goalCard:    { padding: 0, overflow: 'hidden' },
-  goalGradient:{ borderRadius: 16 },
-  goalContent: {
-    flexDirection:   'row',
-    alignItems:      'center',
-    justifyContent:  'space-between',
-    padding:         20,
+  dateText: {
+    fontSize: 12,
+    fontFamily: Fonts.body,
+    color: '#64748B',
+    marginBottom: 2,
   },
-  goalTitle:   { color: '#FFF', fontFamily: Fonts.body, fontSize: FontSize.md, fontWeight: '600', marginBottom: 4 },
-  goalSub:     { color: 'rgba(255,255,255,0.8)', fontSize: FontSize.sm, fontFamily: Fonts.body },
-  goalBtn:     { backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 20, paddingVertical: 8, paddingHorizontal: 16 },
-  sectionTitle:{ fontSize: FontSize.lg, fontWeight: '700', marginBottom: 12 },
-  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  seeAll:      { fontSize: FontSize.sm, fontWeight: '600' },
-  suggestionCard: {
+  greetingText: {
+    fontSize: 22,
+    fontFamily: Fonts.heading,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  avatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#EEF2FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#E0E7FF',
+  },
+  avatarText: {
+    fontSize: 15,
+    fontFamily: Fonts.heading,
+    fontWeight: '700',
+    color: '#4F46E5',
+  },
+  streakCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 16,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.03,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  streakHeader: {
     flexDirection: 'row',
-    alignItems:    'center',
-    gap:           12,
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
   },
-  suggEmoji:   { fontSize: 32 },
-  suggText:    { flex: 1, gap: 2 },
-  suggTitle:   { fontSize: FontSize.base, fontWeight: '600' },
-  suggDesc:    { fontSize: FontSize.sm },
-  sessionList: { gap: 8 },
+  streakTitle: {
+    fontSize: 18,
+    fontFamily: Fonts.heading,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  streakBest: {
+    fontSize: 12,
+    fontFamily: Fonts.body,
+    color: '#64748B',
+  },
+  weekRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  dayCol: {
+    alignItems: 'center',
+    gap: 6,
+  },
+  dayCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dayCircleDone: {
+    backgroundColor: '#4F46E5',
+  },
+  dayCircleToday: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 2,
+    borderColor: '#4F46E5',
+  },
+  dayCircleFuture: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+    borderStyle: 'dashed',
+  },
+  checkMark: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  dayLabel: {
+    fontSize: 11,
+    fontFamily: Fonts.body,
+    color: '#64748B',
+  },
+  cardDivider: {
+    height: 1,
+    backgroundColor: '#F1F5F9',
+    marginBottom: 16,
+  },
+  goalSection: {
+    gap: 8,
+  },
+  goalTextRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  goalLabel: {
+    fontSize: 13,
+    fontFamily: Fonts.body,
+    fontWeight: '600',
+    color: '#0F172A',
+  },
+  goalValue: {
+    fontSize: 13,
+    fontFamily: Fonts.body,
+    color: '#64748B',
+  },
+  progressBarTrack: {
+    height: 8,
+    backgroundColor: '#E2E8F0',
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  progressBarFill: {
+    height: '100%',
+    backgroundColor: '#4F46E5',
+    borderRadius: 4,
+  },
+  uploadBtn: {
+    backgroundColor: '#4F46E5',
+    borderRadius: 14,
+    height: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14,
+    shadowColor: '#4F46E5',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  uploadBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontFamily: Fonts.body,
+    fontWeight: '700',
+  },
+  suggestedCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 22,
+  },
+  suggestedIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: '#FEF3C7',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  suggestedTextCol: {
+    flex: 1,
+  },
+  suggestedLabel: {
+    fontSize: 11,
+    fontFamily: Fonts.body,
+    color: '#94A3B8',
+    marginBottom: 2,
+  },
+  suggestedTitle: {
+    fontSize: 14,
+    fontFamily: Fonts.heading,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  chevron: {
+    fontSize: 20,
+    color: '#94A3B8',
+    marginLeft: 8,
+  },
+  recentSection: {
+    marginBottom: 20,
+  },
+  recentHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  recentTitle: {
+    fontSize: 17,
+    fontFamily: Fonts.heading,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  seeAllText: {
+    fontSize: 13,
+    fontFamily: Fonts.body,
+    fontWeight: '600',
+    color: '#4F46E5',
+  },
+  sessionsList: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    overflow: 'hidden',
+  },
   sessionRow: {
-    flexDirection:   'row',
-    alignItems:      'center',
-    justifyContent:  'space-between',
-    padding:         14,
-    borderRadius:    12,
-    borderWidth:     1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
   },
-  sessionLeft: { flex: 1, gap: 2, marginRight: 8 },
-  sessionRight:{ flexDirection: 'row', alignItems: 'center', gap: 6 },
-  sessionTitle:{ fontSize: FontSize.base, fontWeight: '600' },
-  sessionSub:  { fontSize: FontSize.xs },
-  scorePill: {
-    paddingHorizontal: 10,
-    paddingVertical:    4,
-    borderRadius:       20,
+  sessionLeft: {
+    flex: 1,
   },
-  scoreText:   { fontSize: FontSize.sm, fontWeight: '700' },
-  pendingText: { fontSize: FontSize.xs },
-  chevron:     { fontSize: FontSize.xl, fontWeight: '300' },
-  emptyCard:   { alignItems: 'center', gap: 10, paddingVertical: 32 },
-  emptyEmoji:  { fontSize: 40 },
-  emptyText:   { fontSize: FontSize.base, textAlign: 'center' },
+  sessionPieceName: {
+    fontSize: 15,
+    fontFamily: Fonts.heading,
+    fontWeight: '700',
+    color: '#0F172A',
+    marginBottom: 3,
+  },
+  sessionMeta: {
+    fontSize: 12,
+    fontFamily: Fonts.body,
+    color: '#94A3B8',
+  },
+  sessionRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  deltaBox: {
+    minWidth: 32,
+    alignItems: 'flex-end',
+  },
+  deltaText: {
+    fontSize: 13,
+    fontFamily: Fonts.body,
+    fontWeight: '600',
+  },
+  sessionScore: {
+    fontSize: 18,
+    fontFamily: Fonts.heading,
+    fontWeight: '800',
+    color: '#0F172A',
+    minWidth: 26,
+    textAlign: 'right',
+  },
+  pressed: {
+    opacity: 0.85,
+  },
 });

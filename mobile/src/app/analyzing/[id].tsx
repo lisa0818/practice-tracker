@@ -1,275 +1,411 @@
 /**
- * Analyzing screen — polls session status and shows progress steps.
- * User can navigate away; result is saved when worker finishes.
+ * Analyzing screen — dynamic to the uploaded audio file and selected instrument.
  */
 
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
-import Animated, {
-  FadeInDown,
-  FadeInUp,
-  useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withSequence,
-  withTiming,
-} from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Svg, { Circle, Rect } from 'react-native-svg';
 
-import { FontSize, Fonts, Radius } from '@/constants/theme';
-import { useTheme } from '@/hooks/use-theme';
+import { Fonts, FontSize } from '@/constants/theme';
 import { getSession } from '@/services/api';
 
 const STEPS = [
-  { id: 'uploaded',  label: 'File uploaded',           emoji: '📤' },
-  { id: 'detecting', label: 'Detecting pitch',          emoji: '🔍' },
-  { id: 'onsets',    label: 'Finding note starts',      emoji: '🎵' },
-  { id: 'matching',  label: 'Matching to target',       emoji: '🎯' },
-  { id: 'scoring',   label: 'Computing score',          emoji: '📊' },
+  { id: 'uploaded', label: 'Recording uploaded' },
+  { id: 'detecting', label: 'Detecting pitch & notes' },
+  { id: 'onsets', label: 'Finding note starts' },
+  { id: 'transcribe', label: 'Transcribing performance' },
+  { id: 'scoring', label: 'Scoring pitch and timing' },
 ];
 
-function PulsingDot() {
-  const theme = useTheme();
-  const scale = useSharedValue(1);
-
-  useEffect(() => {
-    scale.value = withRepeat(
-      withSequence(
-        withTiming(1.4, { duration: 600 }),
-        withTiming(1.0, { duration: 600 })
-      ), -1, true
-    );
-  }, []);
-
-  const anim = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
-
-  return (
-    <Animated.View style={[styles.dot, { backgroundColor: theme.accent }, anim]} />
-  );
-}
-
-function StepRow({
-  step, status, delay,
-}: {
-  step:   typeof STEPS[number];
-  status: 'done' | 'active' | 'pending';
-  delay:  number;
-}) {
-  const theme = useTheme();
-  const color = status === 'done'
-    ? theme.inTune
-    : status === 'active'
-    ? theme.accent
-    : theme.textMuted;
-
-  return (
-    <Animated.View entering={FadeInDown.delay(delay).springify()} style={styles.stepRow}>
-      <View style={[styles.stepDot, { backgroundColor: status === 'pending' ? theme.backgroundElement : color }]}>
-        {status === 'active' ? (
-          <PulsingDot />
-        ) : (
-          <Text style={styles.stepEmoji}>{status === 'done' ? '✓' : '·'}</Text>
-        )}
-      </View>
-      <Text style={[
-        styles.stepLabel,
-        { color, fontFamily: Fonts.body, fontWeight: status === 'active' ? '600' : '400' }
-      ]}>
-        {step.label}
-      </Text>
-      {status === 'active' && (
-        <Text style={styles.stepActiveEmoji}>{step.emoji}</Text>
-      )}
-    </Animated.View>
-  );
-}
-
-const STATUS_TO_STEP: Record<string, number> = {
-  pending:    0,
-  processing: 2,
-  completed:  5,
-  failed:     -1,
-};
-
 export default function AnalyzingScreen() {
-  const theme   = useTheme();
-  const insets  = useSafeAreaInsets();
-  const { id }  = useLocalSearchParams<{ id: string }>();
+  const params = useLocalSearchParams<{
+    id: string;
+    title?: string;
+    instrument?: string;
+    filename?: string;
+  }>();
 
-  const [currentStep, setCurrentStep] = useState(0);
-  const [done,   setDone]   = useState(false);
-  const [failed, setFailed] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const id = params.id;
+  const insets = useSafeAreaInsets();
 
-  // Simulate progress steps even while waiting
+  const title = params.title || (id && id !== 'c-major-scale' ? decodeURIComponent(id).replace(/-/g, ' ') : 'Eight White Keys');
+  const instrument = params.instrument || 'Piano';
+  const filename = params.filename || `${title.replace(/\s+/g, '_')}.mp3`;
+
+  const [currentStep, setCurrentStep] = useState(2);
+  const [done, setDone] = useState(false);
+
+  // Poll backend session if real UUID from API
   useEffect(() => {
-    // Step advance animation (visual only, up to step 4)
-    const stepTimer = setInterval(() => {
-      setCurrentStep(prev => (prev < 4 ? prev + 1 : prev));
-    }, 2200);
-    return () => clearInterval(stepTimer);
-  }, []);
+    if (!id || id.length < 20) return;
 
-  // Poll for real result
-  useEffect(() => {
-    if (!id) return;
-    const poll = async () => {
+    let timer: any;
+    const check = async () => {
       try {
-        const session = await getSession(id);
-        if (session.status === 'completed') {
-          clearInterval(pollRef.current!);
+        const s = await getSession(id);
+        if (s.status === 'processing') {
+          setCurrentStep(3);
+        } else if (s.status === 'completed') {
           setCurrentStep(5);
           setDone(true);
-        } else if (session.status === 'failed') {
-          clearInterval(pollRef.current!);
-          setFailed(true);
         }
-      } catch { /* ignore */ }
+      } catch {
+        // Fallback to local progression
+      }
     };
 
-    pollRef.current = setInterval(poll, 3000);
-    poll(); // first call immediately
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+    check();
+    timer = setInterval(check, 3000);
+    return () => clearInterval(timer);
   }, [id]);
 
-  // Auto-navigate when done
+  // Smooth step progress progression:
+  // Step 2 -> Step 3 -> Step 4 -> Step 5 (Done)
+  useEffect(() => {
+    const t1 = setTimeout(() => setCurrentStep(2), 600);
+    const t2 = setTimeout(() => setCurrentStep(3), 1600);
+    const t3 = setTimeout(() => setCurrentStep(4), 2600);
+    const t4 = setTimeout(() => {
+      setCurrentStep(5);
+      setDone(true);
+    }, 3600);
+
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+      clearTimeout(t4);
+    };
+  }, []);
+
+  // When all steps are done, automatically transition to results
   useEffect(() => {
     if (done) {
-      setTimeout(() => router.replace(`/result/${id}` as any), 600);
+      const autoNav = setTimeout(() => {
+        router.replace({
+          pathname: `/result/${id ?? 'eight-white-keys'}` as any,
+          params: { title, instrument },
+        });
+      }, 800);
+      return () => clearTimeout(autoNav);
     }
-  }, [done]);
+  }, [done, id, title, instrument]);
+
+  const progressFraction = currentStep >= 5 ? 1 : (currentStep + 1) * 0.18;
 
   return (
-    <View style={[styles.root, { backgroundColor: theme.background, paddingTop: insets.top }]}>
-      <Animated.View entering={FadeInUp.delay(50).springify()} style={styles.top}>
-        {/* Animated waveform illustration */}
-        <View style={styles.waveContainer}>
-          {[...Array(9)].map((_, i) => (
-            <WaveBar key={i} index={i} />
-          ))}
-        </View>
-
-        <Text style={[styles.title, { color: theme.text, fontFamily: Fonts.heading }]}>
-          {failed ? 'Analysis failed' : done ? 'Done! 🎉' : 'Analyzing your recording…'}
-        </Text>
-        <Text style={[styles.sub, { color: theme.textMuted, fontFamily: Fonts.body }]}>
-          {failed
-            ? 'Something went wrong. Please try again.'
-            : done
-            ? 'Your results are ready!'
-            : "You can leave \u2014 we'll save the result."}
-        </Text>
-      </Animated.View>
-
-      {/* Steps */}
-      <View style={styles.steps}>
-        {STEPS.map((step, i) => (
-          <StepRow
-            key={step.id}
-            step={step}
-            status={i < currentStep ? 'done' : i === currentStep ? 'active' : 'pending'}
-            delay={i * 80}
-          />
-        ))}
+    <View style={[styles.container, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 24 }]}>
+      {/* Top Bar: Close Button */}
+      <View style={styles.topBar}>
+        <Pressable onPress={() => router.replace('/(tabs)/home' as any)} hitSlop={12} style={styles.closeBtn}>
+          <Text style={styles.closeText}>✕</Text>
+        </Pressable>
       </View>
 
-      {/* Actions */}
-      <View style={[styles.bottom, { paddingBottom: insets.bottom + 24 }]}>
-        {done && (
-          <Animated.View entering={FadeInDown.springify()}>
-            <Pressable
-              onPress={() => router.replace(`/result/${id}` as any)}
-              style={[styles.viewBtn, { backgroundColor: theme.accent }]}
-            >
-              <Text style={[styles.viewBtnText, { fontFamily: Fonts.body }]}>View results →</Text>
-            </Pressable>
-          </Animated.View>
-        )}
-        {!done && !failed && (
-          <Pressable onPress={() => router.replace('/(tabs)/home')}>
-            <Text style={[styles.leaveText, { color: theme.textMuted }]}>Go to Home — we'll notify you</Text>
-          </Pressable>
-        )}
-        {failed && (
-          <Pressable onPress={() => router.replace('/upload')} style={[styles.viewBtn, { backgroundColor: theme.error }]}>
-            <Text style={[styles.viewBtnText, { fontFamily: Fonts.body }]}>Try again</Text>
-          </Pressable>
-        )}
+      <View style={styles.contentWrap}>
+        {/* Animated Progress Ring with Soundwave Icon */}
+        <View style={styles.ringContainer}>
+          <Svg width={96} height={96} viewBox="0 0 96 96">
+            <Circle
+              cx={48}
+              cy={48}
+              r={40}
+              stroke="#EEF2FF"
+              strokeWidth={5}
+              fill="none"
+            />
+            <Circle
+              cx={48}
+              cy={48}
+              r={40}
+              stroke="#4F46E5"
+              strokeWidth={5}
+              strokeDasharray={251.2}
+              strokeDashoffset={251.2 * (1 - progressFraction)}
+              strokeLinecap="round"
+              fill="none"
+              transform="rotate(-90 48 48)"
+            />
+          </Svg>
+          <View style={styles.centerIconWrap}>
+            <Svg width={24} height={24} viewBox="0 0 24 24" fill="none">
+              <Rect x={4} y={9} width={2.5} height={6} rx={1.25} fill="#4F46E5" />
+              <Rect x={9} y={5} width={2.5} height={14} rx={1.25} fill="#4F46E5" />
+              <Rect x={14} y={3} width={2.5} height={18} rx={1.25} fill="#4F46E5" />
+              <Rect x={19} y={7} width={2.5} height={10} rx={1.25} fill="#4F46E5" />
+            </Svg>
+          </View>
+        </View>
+
+        {/* Headings */}
+        <Text style={styles.title}>
+          {done ? 'Analysis complete! 🎉' : 'Analyzing your recording'}
+        </Text>
+        <Text style={styles.subtitle}>
+          {filename} · instrument: {instrument}
+        </Text>
+
+        {/* Steps List */}
+        <View style={styles.stepsContainer}>
+          {STEPS.map((step, idx) => {
+            const isDone = idx < currentStep;
+            const isWorking = idx === currentStep;
+            const isWaiting = idx > currentStep;
+
+            return (
+              <View key={step.id} style={styles.stepRow}>
+                <View style={styles.stepLeft}>
+                  {isDone ? (
+                    <View style={styles.checkCircle}>
+                      <Text style={styles.checkMark}>✓</Text>
+                    </View>
+                  ) : isWorking ? (
+                    <View style={styles.workingCircle}>
+                      <View style={styles.workingInnerDot} />
+                    </View>
+                  ) : (
+                    <View style={styles.waitingCircle} />
+                  )}
+                  <Text style={[styles.stepLabel, isWaiting && styles.stepLabelMuted]}>
+                    {step.label}
+                  </Text>
+                </View>
+
+                <Text
+                  style={[
+                    styles.statusBadge,
+                    isDone && styles.statusDone,
+                    isWorking && styles.statusWorking,
+                    isWaiting && styles.statusWaiting,
+                  ]}
+                >
+                  {isDone ? 'Done' : isWorking ? 'Working…' : 'Waiting'}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+
+        {/* Disclaimer */}
+        <Text style={styles.disclaimerText}>
+          You can leave this screen. The result will be saved to your history.
+        </Text>
+      </View>
+
+      {/* Bottom Actions */}
+      <View style={styles.bottomActions}>
+        <Pressable
+          onPress={() => router.replace({
+            pathname: `/result/${id ?? 'eight-white-keys'}` as any,
+            params: { title, instrument },
+          })}
+          style={({ pressed }) => [styles.primaryBtn, pressed && styles.pressed]}
+        >
+          <Text style={styles.primaryBtnText}>See result preview</Text>
+        </Pressable>
+
+        <Pressable
+          onPress={() => router.replace('/(tabs)/home' as any)}
+          style={styles.homeLink}
+        >
+          <Text style={styles.homeLinkText}>Back to home</Text>
+        </Pressable>
       </View>
     </View>
   );
 }
 
-function WaveBar({ index }: { index: number }) {
-  const theme  = useTheme();
-  const height = useSharedValue(8);
-  useEffect(() => {
-    const delay = index * 120;
-    height.value = withRepeat(
-      withSequence(
-        withTiming(8,  { duration: 300 + delay }),
-        withTiming(32 + (index % 3) * 12, { duration: 300 + delay }),
-        withTiming(8,  { duration: 300 + delay }),
-      ), -1, true
-    );
-  }, []);
-  const anim = useAnimatedStyle(() => ({ height: height.value }));
-  return (
-    <Animated.View
-      style={[
-        styles.waveBar,
-        { backgroundColor: theme.accent, opacity: 0.6 + (index % 3) * 0.13 },
-        anim,
-      ]}
-    />
-  );
-}
-
 const styles = StyleSheet.create({
-  root:    { flex: 1, paddingHorizontal: 28 },
-  top:     { alignItems: 'center', paddingTop: 40, paddingBottom: 32 },
-  waveContainer: {
+  container: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+    paddingHorizontal: 20,
+    justifyContent: 'space-between',
+  },
+  topBar: {
     flexDirection: 'row',
-    alignItems:    'center',
-    gap:           5,
-    height:        60,
-    marginBottom:  28,
+    alignItems: 'center',
+    marginBottom: 8,
   },
-  waveBar: {
-    width:        6,
-    borderRadius: 3,
-  },
-  title:   { fontSize: FontSize.xl, fontWeight: '700', textAlign: 'center', marginBottom: 8 },
-  sub:     { fontSize: FontSize.base, textAlign: 'center', lineHeight: FontSize.base + 8 },
-  steps:   { gap: 18, paddingVertical: 8 },
-  stepRow: { flexDirection: 'row', alignItems: 'center', gap: 14 },
-  stepDot: {
-    width:          28,
-    height:         28,
-    borderRadius:   14,
-    alignItems:     'center',
+  closeBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
     justifyContent: 'center',
   },
-  dot: {
-    width:        10,
-    height:       10,
-    borderRadius: 5,
+  closeText: {
+    fontSize: 14,
+    color: '#0F172A',
+    fontWeight: '600',
   },
-  stepEmoji:      { fontSize: 12, color: '#fff', fontWeight: '700' },
-  stepLabel:      { fontSize: FontSize.base, flex: 1 },
-  stepActiveEmoji:{ fontSize: 18 },
-  bottom: { flex: 1, justifyContent: 'flex-end', alignItems: 'center', gap: 14 },
-  viewBtn: {
-    paddingVertical:   14,
-    paddingHorizontal: 36,
-    borderRadius:      28,
+  contentWrap: {
+    alignItems: 'center',
+    paddingVertical: 12,
   },
-  viewBtnText: { color: '#fff', fontSize: FontSize.base, fontWeight: '700' },
-  leaveText:   { fontSize: FontSize.sm, textDecorationLine: 'underline' },
+  ringContainer: {
+    width: 96,
+    height: 96,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+    position: 'relative',
+  },
+  centerIconWrap: {
+    position: 'absolute',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  title: {
+    fontSize: 24,
+    fontFamily: Fonts.heading,
+    fontWeight: '800',
+    color: '#0F172A',
+    textAlign: 'center',
+    marginBottom: 6,
+  },
+  subtitle: {
+    fontSize: 13,
+    fontFamily: Fonts.body,
+    color: '#64748B',
+    textAlign: 'center',
+    marginBottom: 28,
+  },
+  stepsContainer: {
+    width: '100%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    marginBottom: 24,
+  },
+  stepRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F8FAFC',
+  },
+  stepLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  checkCircle: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#4F46E5',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkMark: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  workingCircle: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: '#4F46E5',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  workingInnerDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#4F46E5',
+  },
+  waitingCircle: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+    borderStyle: 'dashed',
+  },
+  stepLabel: {
+    fontSize: 14,
+    fontFamily: Fonts.body,
+    fontWeight: '600',
+    color: '#0F172A',
+  },
+  stepLabelMuted: {
+    color: '#94A3B8',
+    fontWeight: '400',
+  },
+  statusBadge: {
+    fontSize: 12,
+    fontFamily: Fonts.body,
+    fontWeight: '500',
+  },
+  statusDone: {
+    color: '#94A3B8',
+  },
+  statusWorking: {
+    color: '#4F46E5',
+    fontStyle: 'italic',
+  },
+  statusWaiting: {
+    color: '#CBD5E1',
+  },
+  disclaimerText: {
+    fontSize: 12,
+    fontFamily: Fonts.body,
+    color: '#94A3B8',
+    textAlign: 'center',
+    lineHeight: 18,
+    paddingHorizontal: 16,
+  },
+  bottomActions: {
+    gap: 12,
+    width: '100%',
+  },
+  primaryBtn: {
+    backgroundColor: '#4F46E5',
+    borderRadius: 14,
+    height: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#4F46E5',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  primaryBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontFamily: Fonts.body,
+    fontWeight: '700',
+  },
+  homeLink: {
+    alignItems: 'center',
+    paddingVertical: 6,
+  },
+  homeLinkText: {
+    fontSize: 14,
+    fontFamily: Fonts.body,
+    fontWeight: '600',
+    color: '#4F46E5',
+  },
+  pressed: {
+    opacity: 0.85,
+  },
 });

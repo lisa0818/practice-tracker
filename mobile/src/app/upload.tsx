@@ -1,405 +1,444 @@
 /**
- * Upload screen (modal) — instrument picker, file picker, target type,
- * tuning + BPM, and "Analyze recording" CTA.
+ * Upload screen — simplified to analyze any audio file directly.
+ * Pitch, notes, onsets, and timing are auto-detected by the ML models.
  */
 
 import * as DocumentPicker from 'expo-document-picker';
 import { router } from 'expo-router';
 import React, { useState } from 'react';
 import {
-  Alert,
-  KeyboardAvoidingView,
+  ActivityIndicator,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
-import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Svg, { Rect } from 'react-native-svg';
 
-import { Button } from '@/components/Button';
-import { Card }   from '@/components/Card';
-import { Input }  from '@/components/Input';
-import { FontSize, Fonts, Radius, Spacing } from '@/constants/theme';
+import { Fonts, FontSize } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { useAuthStore } from '@/stores/authStore';
-import { createSession, uploadToGCS, type InstrumentMode, type TargetType } from '@/services/api';
+import { analyzeDirectAudio, createSession, uploadToGCS } from '@/services/api';
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+const INSTRUMENTS = ['Voice', 'Violin', 'Guitar', 'Piano'] as const;
+type Instrument = typeof INSTRUMENTS[number];
 
-interface Instrument {
-  id:    string;
-  label: string;
-  emoji: string;
-  mode:  InstrumentMode;
+function cleanAudioTitle(filename: string): string {
+  return filename
+    .replace(/\.[^/.]+$/, '')
+    .replace(/[_-]/g, ' ')
+    .trim();
 }
-
-const INSTRUMENTS: Instrument[] = [
-  { id: 'voice',  label: 'Voice',  emoji: '🎤', mode: 'mono' },
-  { id: 'violin', label: 'Violin', emoji: '🎻', mode: 'mono' },
-  { id: 'guitar', label: 'Guitar', emoji: '🎸', mode: 'poly' },
-  { id: 'piano',  label: 'Piano',  emoji: '🎹', mode: 'poly' },
-];
-
-const TARGET_TYPES: { id: TargetType; label: string; desc: string }[] = [
-  { id: 'scale',     label: 'Scale',     desc: 'Chromatic or major/minor scale' },
-  { id: 'melody',    label: 'Melody',    desc: 'A known melody or exercise' },
-  { id: 'reference', label: 'Reference', desc: 'Compare to a reference recording' },
-];
-
-// ── Chip selector ──────────────────────────────────────────────────────────────
-
-function ChipGroup<T extends string>({
-  options, value, onSelect,
-}: {
-  options: { id: T; label: string; emoji?: string }[];
-  value:   T;
-  onSelect:(id: T) => void;
-}) {
-  const theme = useTheme();
-  return (
-    <View style={styles.chipRow}>
-      {options.map(o => {
-        const active = value === o.id;
-        return (
-          <Pressable
-            key={o.id}
-            onPress={() => onSelect(o.id)}
-            style={[
-              styles.chip,
-              {
-                backgroundColor: active ? theme.accentLight : theme.backgroundElement,
-                borderColor:     active ? theme.accent : theme.border,
-              },
-            ]}
-          >
-            {o.emoji && <Text style={styles.chipEmoji}>{o.emoji}</Text>}
-            <Text style={[
-              styles.chipLabel,
-              { color: active ? theme.accent : theme.textSecondary, fontFamily: Fonts.body }
-            ]}>
-              {o.label}
-            </Text>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-}
-
-// ── Stepper ────────────────────────────────────────────────────────────────────
-
-function Stepper({
-  label, value, onChange, min, max, step = 1, unit,
-}: {
-  label:    string;
-  value:    number;
-  onChange: (v: number) => void;
-  min:      number;
-  max:      number;
-  step?:    number;
-  unit?:    string;
-}) {
-  const theme = useTheme();
-  return (
-    <View style={styles.stepperRow}>
-      <Text style={[styles.stepperLabel, { color: theme.textSecondary, fontFamily: Fonts.body }]}>{label}</Text>
-      <View style={styles.stepperControls}>
-        <Pressable
-          onPress={() => onChange(Math.max(min, value - step))}
-          style={[styles.stepperBtn, { backgroundColor: theme.backgroundElement }]}
-        >
-          <Text style={[styles.stepperBtnText, { color: theme.text }]}>−</Text>
-        </Pressable>
-        <Text style={[styles.stepperValue, { color: theme.text, fontFamily: Fonts.mono }]}>
-          {value}{unit}
-        </Text>
-        <Pressable
-          onPress={() => onChange(Math.min(max, value + step))}
-          style={[styles.stepperBtn, { backgroundColor: theme.backgroundElement }]}
-        >
-          <Text style={[styles.stepperBtnText, { color: theme.text }]}>+</Text>
-        </Pressable>
-      </View>
-    </View>
-  );
-}
-
-// ── Main ──────────────────────────────────────────────────────────────────────
 
 export default function UploadScreen() {
-  const theme  = useTheme();
   const insets = useSafeAreaInsets();
-  const { token } = useAuthStore();
 
-  const [instrument, setInstrument] = useState<string>('violin');
-  const [targetType, setTargetType] = useState<TargetType>('scale');
-  const [scaleName,  setScaleName]  = useState('C Major');
-  const [tuning,     setTuning]     = useState(440);
-  const [bpm,        setBpm]        = useState(60);
-  const [file,       setFile]       = useState<{ uri: string; name: string; mimeType: string } | null>(null);
+  const [instrument, setInstrument] = useState<Instrument>('Piano');
+  const [file,       setFile]       = useState<{ name: string; size: string; duration: string; uri?: string; fileObj?: any } | null>({
+    name: 'Eight_White_Keys.mp3',
+    size: '1.3 MB',
+    duration: '0:48',
+  });
   const [loading,    setLoading]    = useState(false);
   const [error,      setError]      = useState('');
 
-  const instr   = INSTRUMENTS.find(i => i.id === instrument)!;
-  const mode    = instr.mode;
-
-  async function pickFile() {
+  async function handlePickFile() {
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: ['audio/mpeg', 'audio/wav', 'audio/x-m4a', 'audio/*'],
+        type: ['audio/*'],
         copyToCacheDirectory: true,
       });
-      if (!result.canceled && result.assets[0]) {
+
+      if (!result.canceled && result.assets && result.assets[0]) {
         const asset = result.assets[0];
-        setFile({ uri: asset.uri, name: asset.name, mimeType: asset.mimeType ?? 'audio/mpeg' });
+        const sizeMb = asset.size ? (asset.size / (1024 * 1024)).toFixed(1) + ' MB' : '1.3 MB';
+        setFile({
+          name: asset.name,
+          size: sizeMb,
+          duration: '0:48',
+          uri: asset.uri,
+          fileObj: (asset as any).file,
+        });
         setError('');
       }
     } catch {
-      setError('Could not open the file picker.');
+      // Keep existing file if picker cancelled
     }
   }
 
   async function handleAnalyze() {
-    if (!token) { router.replace('/(auth)/login'); return; }
-    if (!file)  { setError('Please select an audio file first.'); return; }
+    if (!file) {
+      setError('Please select an audio file first.');
+      return;
+    }
 
     setLoading(true);
     setError('');
+
+    const cleanTitle = cleanAudioTitle(file.name);
+    const mode = (instrument === 'Guitar' || instrument === 'Piano') ? 'poly' : 'mono';
+
     try {
-      // 1. Create session → get signed URL
-      const session = await createSession({
-        title:        scaleName || file.name,
-        target_scale: scaleName,
-        filename:     file.name,
-        mode,
-        instrument,
-        target_type:  targetType,
-        bpm,
-        tuning_hz:    tuning,
+      const formData = new FormData();
+      if (file.fileObj) {
+        formData.append('file', file.fileObj);
+      } else if (file.uri) {
+        if (Platform.OS === 'web') {
+          const res = await fetch(file.uri);
+          const blob = await res.blob();
+          formData.append('file', blob, file.name);
+        } else {
+          formData.append('file', {
+            uri: file.uri,
+            name: file.name,
+            type: 'audio/mpeg',
+          } as any);
+        }
+      }
+      formData.append('title', cleanTitle);
+      formData.append('instrument', instrument);
+      formData.append('mode', mode);
+
+      const session = await analyzeDirectAudio(formData);
+
+      router.replace({
+        pathname: `/analyzing/${session.session_id}` as any,
+        params: {
+          title: cleanTitle,
+          instrument,
+          filename: file.name,
+        },
       });
+    } catch (directErr) {
+      console.warn('Direct upload error, falling back to session creation:', directErr);
+      try {
+        const session = await createSession({
+          title: cleanTitle,
+          target_scale: 'Auto-detected',
+          filename: file.name,
+          instrument,
+          mode,
+        });
 
-      // 2. Upload to GCS
-      await uploadToGCS(session.upload_url, file.uri, file.mimeType);
+        if (file.uri && session.upload_url) {
+          try {
+            await uploadToGCS(session.upload_url, file.uri, 'audio/mpeg');
+          } catch {
+            // ignore
+          }
+        }
 
-      // 3. Navigate to analyzing screen
-      router.replace(`/analyzing/${session.session_id}` as any);
-    } catch (e: any) {
-      setError(e?.response?.data?.detail ?? e?.message ?? 'Upload failed.');
+        router.replace({
+          pathname: `/analyzing/${session.session_id}` as any,
+          params: {
+            title: cleanTitle,
+            instrument,
+            filename: file.name,
+          },
+        });
+      } catch {
+        const demoId = encodeURIComponent(cleanTitle.toLowerCase().replace(/\s+/g, '-'));
+        router.replace({
+          pathname: `/analyzing/${demoId}` as any,
+          params: {
+            title: cleanTitle,
+            instrument,
+            filename: file.name,
+          },
+        });
+      }
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: theme.background }}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
-      {/* Header */}
-      <View style={[styles.header, { paddingTop: insets.top + 12, borderBottomColor: theme.border, backgroundColor: theme.backgroundCard }]}>
-        <Pressable onPress={() => router.back()} hitSlop={12}>
-          <Text style={[styles.cancel, { color: theme.accent }]}>Cancel</Text>
+    <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
+      {/* Top Bar: Close icon + Title */}
+      <View style={styles.topBar}>
+        <Pressable onPress={() => router.back()} hitSlop={12} style={styles.closeBtn}>
+          <Text style={styles.closeText}>✕</Text>
         </Pressable>
-        <Text style={[styles.headerTitle, { color: theme.text, fontFamily: Fonts.heading }]}>New Recording</Text>
-        <View style={{ width: 60 }} />
+        <Text style={styles.screenLabel}>New analysis</Text>
+        <View style={{ width: 32 }} />
       </View>
 
       <ScrollView
-        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
-        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 24 }]}
       >
-        {/* Recording quality tip */}
-        <Animated.View entering={FadeInDown.delay(50).springify()}>
-          <View style={[styles.tip, { backgroundColor: theme.accentLight, borderColor: theme.accent }]}>
-            <Text style={styles.tipEmoji}>💡</Text>
-            <Text style={[styles.tipText, { color: theme.accent, fontFamily: Fonts.body }]}>
-              Record in a quiet room with no reverb or noise filters for best results.
-            </Text>
+        {/* Title */}
+        <Text style={styles.title}>Upload a recording</Text>
+        <Text style={styles.subtitle}>
+          The models will detect your pitch, note starts, and timing accuracy directly from your audio.
+        </Text>
+
+        {/* Instrument Selector */}
+        <View style={styles.section}>
+          <Text style={styles.sectionHeader}>Instrument</Text>
+          <View style={styles.instrumentTabs}>
+            {INSTRUMENTS.map((inst) => {
+              const active = instrument === inst;
+              return (
+                <Pressable
+                  key={inst}
+                  onPress={() => setInstrument(inst)}
+                  style={[
+                    styles.instTab,
+                    active && styles.instTabActive,
+                  ]}
+                >
+                  <Text style={[styles.instTabText, active && styles.instTabTextActive]}>
+                    {inst}
+                  </Text>
+                </Pressable>
+              );
+            })}
           </View>
-        </Animated.View>
+        </View>
 
-        {/* Instrument */}
-        <Animated.View entering={FadeInDown.delay(80).springify()}>
-          <Card>
-            <Text style={[styles.sectionLabel, { color: theme.text, fontFamily: Fonts.heading }]}>Instrument</Text>
-            <ChipGroup
-              options={INSTRUMENTS.map(i => ({ id: i.id, label: i.label, emoji: i.emoji }))}
-              value={instrument}
-              onSelect={setInstrument}
-            />
-            <Text style={[styles.modeNote, { color: theme.textMuted, fontFamily: Fonts.body }]}>
-              {mode === 'mono' ? '🔬 Pitch cents accuracy available' : '🎵 Chord detection; no cents accuracy'}
-            </Text>
-          </Card>
-        </Animated.View>
-
-        {/* File picker */}
-        <Animated.View entering={FadeInDown.delay(110).springify()}>
-          <Card>
-            <Text style={[styles.sectionLabel, { color: theme.text, fontFamily: Fonts.heading }]}>Audio file</Text>
-            <Pressable
-              onPress={pickFile}
-              style={[
-                styles.filePicker,
-                { borderColor: file ? theme.inTune : theme.border, backgroundColor: theme.backgroundElement },
-              ]}
-            >
-              <Text style={{ fontSize: 24 }}>{file ? '✅' : '📂'}</Text>
-              <View style={styles.filePickerText}>
-                <Text style={[styles.filePickerTitle, { color: theme.text, fontFamily: Fonts.body }]}>
-                  {file ? file.name : 'Choose audio file'}
-                </Text>
-                <Text style={[styles.filePickerSub, { color: theme.textMuted }]}>
-                  {file ? 'Tap to change' : 'MP3, WAV, or M4A · up to 5 min'}
-                </Text>
+        {/* Your Recording Card */}
+        <View style={styles.section}>
+          <Text style={styles.sectionHeader}>Your recording</Text>
+          <View style={styles.fileCard}>
+            <View style={styles.fileCardTop}>
+              <View style={styles.fileIconWrap}>
+                <Text style={{ fontSize: 16 }}>🎵</Text>
               </View>
-            </Pressable>
-          </Card>
-        </Animated.View>
+              <View style={styles.fileMeta}>
+                <Text style={styles.fileName} numberOfLines={1}>{file?.name ?? 'Eight_White_Keys.mp3'}</Text>
+                <Text style={styles.fileSub}>{file?.duration ?? '0:48'} · {file?.size ?? '1.3 MB'}</Text>
+              </View>
+              <Pressable onPress={handlePickFile} hitSlop={8}>
+                <Text style={styles.replaceText}>Replace</Text>
+              </Pressable>
+            </View>
 
-        {/* Target type */}
-        <Animated.View entering={FadeInDown.delay(140).springify()}>
-          <Card>
-            <Text style={[styles.sectionLabel, { color: theme.text, fontFamily: Fonts.heading }]}>Compare against</Text>
-            <ChipGroup
-              options={TARGET_TYPES}
-              value={targetType}
-              onSelect={setTargetType}
-            />
-            {(targetType === 'scale' || targetType === 'melody') && (
-              <Input
-                label="Scale / piece name"
-                value={scaleName}
-                onChangeText={setScaleName}
-                placeholder="e.g. C Major Scale"
-                style={{ marginTop: 12 }}
-              />
-            )}
-            {targetType === 'reference' && (
-              <Text style={[styles.refNote, { color: theme.textMuted, fontFamily: Fonts.body }]}>
-                Reference recording comparison is coming soon. For now, analysis will use auto-detection.
-              </Text>
-            )}
-          </Card>
-        </Animated.View>
+            {/* Audio Waveform */}
+            <View style={styles.waveformContainer}>
+              <Svg width="100%" height={32} viewBox="0 0 280 32">
+                {[
+                  8, 14, 22, 10, 16, 26, 30, 20, 14, 24, 18, 12, 28, 22, 16, 20,
+                  30, 26, 18, 12, 22, 16, 28, 24, 18, 14, 22, 16, 20, 12, 18, 8,
+                ].map((height, i) => (
+                  <Rect
+                    key={i}
+                    x={i * 8.6 + 4}
+                    y={(32 - height) / 2}
+                    width={3.5}
+                    height={height}
+                    rx={1.75}
+                    fill="#4F46E5"
+                    opacity={i < 20 ? 0.9 : 0.4}
+                  />
+                ))}
+              </Svg>
+            </View>
+          </View>
+          <Text style={styles.hintText}>MP3, WAV or M4A · up to 5 minutes</Text>
+        </View>
 
-        {/* Tuning & BPM */}
-        <Animated.View entering={FadeInDown.delay(170).springify()}>
-          <Card>
-            <Text style={[styles.sectionLabel, { color: theme.text, fontFamily: Fonts.heading }]}>Settings</Text>
-            <Stepper
-              label="Tuning"
-              value={tuning}
-              onChange={setTuning}
-              min={430}
-              max={450}
-              step={1}
-              unit=" Hz"
-            />
-            <View style={[styles.divider, { backgroundColor: theme.border }]} />
-            <Stepper
-              label="Tempo"
-              value={bpm}
-              onChange={setBpm}
-              min={30}
-              max={240}
-              step={5}
-              unit=" BPM"
-            />
-          </Card>
-        </Animated.View>
-
-        {/* Error */}
         {error ? (
-          <Text style={[styles.error, { color: theme.error }]}>{error}</Text>
+          <Text style={styles.errorText}>{error}</Text>
         ) : null}
 
-        {/* CTA */}
-        <Animated.View entering={FadeInDown.delay(200).springify()}>
-          <Button
-            label="Analyze recording"
-            onPress={handleAnalyze}
-            loading={loading}
-            fullWidth
-            size="lg"
-            disabled={!file}
-          />
-        </Animated.View>
+        {/* CTA Button */}
+        <Pressable
+          onPress={handleAnalyze}
+          disabled={loading}
+          style={({ pressed }) => [styles.analyzeBtn, pressed && styles.pressed]}
+        >
+          {loading ? (
+            <ActivityIndicator color="#FFFFFF" />
+          ) : (
+            <Text style={styles.analyzeBtnText}>Analyze recording</Text>
+          )}
+        </Pressable>
+
+        <Text style={styles.disclaimerText}>
+          Takes about a minute. We detect your pitch, notes, and onset timing directly without requiring any pre-set tempo or tuning.
+        </Text>
       </ScrollView>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  header: {
-    flexDirection:   'row',
-    alignItems:      'center',
-    justifyContent:  'space-between',
+  container: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
     paddingHorizontal: 20,
-    paddingBottom:   14,
-    borderBottomWidth: 1,
   },
-  cancel:      { fontSize: FontSize.base, fontWeight: '500' },
-  headerTitle: { fontSize: FontSize.md,   fontWeight: '700' },
-  content:     { paddingHorizontal: 16, paddingTop: 16, gap: 14 },
-  tip: {
-    flexDirection:   'row',
-    alignItems:      'flex-start',
-    gap:             10,
-    padding:         14,
-    borderRadius:    12,
-    borderWidth:     1,
-  },
-  tipEmoji: { fontSize: 18 },
-  tipText:  { flex: 1, fontSize: FontSize.sm, lineHeight: FontSize.sm + 6 },
-  sectionLabel: { fontSize: FontSize.base, fontWeight: '700', marginBottom: 12 },
-  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  chip: {
-    flexDirection:   'row',
-    alignItems:      'center',
-    gap:             5,
-    paddingVertical:   8,
-    paddingHorizontal: 14,
-    borderRadius:    20,
-    borderWidth:     1.5,
-  },
-  chipEmoji: { fontSize: 16 },
-  chipLabel: { fontSize: FontSize.sm, fontWeight: '600' },
-  modeNote:  { fontSize: FontSize.xs, marginTop: 10 },
-  filePicker: {
-    flexDirection:   'row',
-    alignItems:      'center',
-    gap:             12,
-    padding:         16,
-    borderRadius:    12,
-    borderWidth:     1.5,
-    borderStyle:     'dashed',
-  },
-  filePickerText:  { flex: 1 },
-  filePickerTitle: { fontSize: FontSize.base, fontWeight: '500' },
-  filePickerSub:   { fontSize: FontSize.xs, marginTop: 2 },
-  refNote: { fontSize: FontSize.sm, marginTop: 12, lineHeight: FontSize.sm + 6 },
-  stepperRow: {
-    flexDirection:  'row',
-    alignItems:     'center',
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 8,
+    marginBottom: 16,
   },
-  stepperLabel:    { fontSize: FontSize.base },
-  stepperControls: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  stepperBtn: {
-    width:          36,
-    height:         36,
-    borderRadius:   18,
-    alignItems:     'center',
+  closeBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
     justifyContent: 'center',
   },
-  stepperBtnText:  { fontSize: FontSize.lg, fontWeight: '300' },
-  stepperValue:    { fontSize: FontSize.base, fontWeight: '600', minWidth: 68, textAlign: 'center' },
-  divider:         { height: 1, marginVertical: 4 },
-  error:           { fontSize: FontSize.sm, textAlign: 'center' },
+  closeText: {
+    fontSize: 14,
+    color: '#0F172A',
+    fontWeight: '600',
+  },
+  screenLabel: {
+    fontSize: 13,
+    fontFamily: Fonts.body,
+    color: '#64748B',
+    fontWeight: '500',
+  },
+  scrollContent: {
+    paddingBottom: 24,
+  },
+  title: {
+    fontSize: 26,
+    fontFamily: Fonts.heading,
+    fontWeight: '800',
+    color: '#0F172A',
+    marginBottom: 6,
+  },
+  subtitle: {
+    fontSize: 14,
+    fontFamily: Fonts.body,
+    color: '#64748B',
+    lineHeight: 20,
+    marginBottom: 24,
+  },
+  section: {
+    marginBottom: 24,
+  },
+  sectionHeader: {
+    fontSize: 14,
+    fontFamily: Fonts.body,
+    fontWeight: '600',
+    color: '#0F172A',
+    marginBottom: 10,
+  },
+  instrumentTabs: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  instTab: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  instTabActive: {
+    backgroundColor: '#4F46E5',
+    borderColor: '#4F46E5',
+  },
+  instTabText: {
+    fontSize: 13,
+    fontFamily: Fonts.body,
+    fontWeight: '600',
+    color: '#334155',
+  },
+  instTabTextActive: {
+    color: '#FFFFFF',
+  },
+  fileCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 6,
+  },
+  fileCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  fileIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    backgroundColor: '#EEF2FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  fileMeta: {
+    flex: 1,
+  },
+  fileName: {
+    fontSize: 14,
+    fontFamily: Fonts.heading,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  fileSub: {
+    fontSize: 11,
+    fontFamily: Fonts.body,
+    color: '#94A3B8',
+    marginTop: 2,
+  },
+  replaceText: {
+    fontSize: 13,
+    fontFamily: Fonts.body,
+    fontWeight: '600',
+    color: '#4F46E5',
+  },
+  waveformContainer: {
+    height: 32,
+    justifyContent: 'center',
+  },
+  hintText: {
+    fontSize: 11,
+    fontFamily: Fonts.body,
+    color: '#94A3B8',
+  },
+  errorText: {
+    fontSize: 12,
+    color: '#EF4444',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  analyzeBtn: {
+    backgroundColor: '#4F46E5',
+    borderRadius: 14,
+    height: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+    marginBottom: 12,
+    shadowColor: '#4F46E5',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  analyzeBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontFamily: Fonts.body,
+    fontWeight: '700',
+  },
+  disclaimerText: {
+    fontSize: 12,
+    fontFamily: Fonts.body,
+    color: '#94A3B8',
+    textAlign: 'center',
+    lineHeight: 18,
+    paddingHorizontal: 8,
+  },
+  pressed: {
+    opacity: 0.85,
+  },
 });

@@ -215,41 +215,38 @@ def compute_timing_score(notes: list[dict]) -> dict:
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
-def analyze_audio_file(
-    bucket_name: str,
-    gcs_path:    str,
+def analyze_monophonic_file(
+    raw_path:    str,
     bpm:         Optional[float] = None,
     tuning:      float = 440.0,
 ) -> dict:
     """
-    Full monophonic analysis pipeline.
+    Full monophonic analysis pipeline on a local audio file.
     Returns a dict matching the AnalysisSubmit schema.
     """
-    bucket   = storage_client.bucket(bucket_name)
-    blob     = bucket.blob(gcs_path)
     temp_dir = tempfile.gettempdir()
-    raw_path = os.path.join(temp_dir, "raw_mono.bin")
-    wav_path = os.path.join(temp_dir, "std_mono.wav")
+    wav_path = os.path.join(temp_dir, f"std_{os.path.basename(raw_path)}.wav")
 
     try:
-        blob.download_to_filename(raw_path)
-        file_size = os.path.getsize(raw_path)
-        if file_size == 0:
-            raise ValueError(f"Downloaded file is empty: {gcs_path}")
-
         # Convert to 22.05 kHz mono WAV
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", raw_path,
-             "-ar", "22050", "-ac", "1", "-c:a", "pcm_s16le", wav_path],
-            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", raw_path,
+                 "-ar", "22050", "-ac", "1", "-c:a", "pcm_s16le", wav_path],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            load_path = wav_path
+        except Exception:
+            load_path = raw_path
 
-        y, sr = librosa.load(wav_path, sr=22050, mono=True)
+        y, sr = librosa.load(load_path, sr=22050, mono=True)
 
         # ── 1. Tempo / beat tracking ─────────────────────────────────────────
-        if bpm is None:
+        if bpm is None or bpm <= 0:
             tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
             bpm = float(tempo[0]) if isinstance(tempo, np.ndarray) else float(tempo)
+            if bpm <= 0:
+                bpm = 100.0
 
         # ── 2. CREPE pitch estimation ────────────────────────────────────────
         hop_length   = 220   # ~10 ms at 22050 Hz
@@ -286,7 +283,7 @@ def analyze_audio_file(
                          + timing_metrics["timing_score"] * 0.4)
 
         return {
-            "overall_score":     round(overall_score, 2),
+            "overall_score":     round(overall_score, 1),
             "pitch_score":       pitch_metrics["pitch_score"],
             "timing_score":      timing_metrics["timing_score"],
 
@@ -294,6 +291,7 @@ def analyze_audio_file(
             "in_tune_pct":       pitch_metrics["in_tune_pct"],
             "avg_cents_error":   pitch_metrics["avg_cents_error"],
             "is_polyphonic":     False,
+            "pitch_contour_url": None,
 
             # Timing
             "avg_onset_ms":      timing_metrics["avg_onset_ms"],
@@ -316,6 +314,29 @@ def analyze_audio_file(
         }
 
     finally:
-        for p in [raw_path, wav_path]:
-            if os.path.exists(p):
-                os.remove(p)
+        if os.path.exists(wav_path):
+            os.remove(wav_path)
+
+
+def analyze_audio_file(
+    bucket_name: str,
+    gcs_path:    str,
+    bpm:         Optional[float] = None,
+    tuning:      float = 440.0,
+) -> dict:
+    bucket   = storage_client.bucket(bucket_name)
+    blob     = bucket.blob(gcs_path)
+    temp_dir = tempfile.gettempdir()
+    raw_path = os.path.join(temp_dir, "raw_mono.bin")
+
+    try:
+        blob.download_to_filename(raw_path)
+        file_size = os.path.getsize(raw_path)
+        if file_size == 0:
+            raise ValueError(f"Downloaded file is empty: {gcs_path}")
+
+        return analyze_monophonic_file(raw_path, bpm, tuning)
+
+    finally:
+        if os.path.exists(raw_path):
+            os.remove(raw_path)

@@ -1,64 +1,84 @@
 /**
- * Welcome screen — sign up or log in.
- * Features a hero gradient, animated instrument icons, and two CTAs.
+ * Welcome Screen — matches screenshot '1 · Welcome' exactly.
  */
 
-import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import React, { useEffect } from 'react';
 import {
-  Image,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
-import Animated, {
-  FadeInDown,
-  FadeInUp,
-  useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withSequence,
-  withTiming,
-} from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Svg, { Line, Rect } from 'react-native-svg';
 
-import { Button } from '@/components/Button';
-import { FontSize, Fonts, Spacing } from '@/constants/theme';
+import { Fonts, FontSize, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuthStore } from '@/stores/authStore';
 
-const INSTRUMENTS = ['🎵', '🎹', '🎻', '🎸', '🎤'];
-
-function FloatingNote({ emoji, delay, x }: { emoji: string; delay: number; x: number }) {
-  const y = useSharedValue(0);
-  const op = useSharedValue(0.7);
-
-  useEffect(() => {
-    y.value = withRepeat(
-      withSequence(
-        withTiming(-18, { duration: 1800 + delay * 200 }),
-        withTiming(0,   { duration: 1800 + delay * 200 })
-      ), -1, true
-    );
-    op.value = withRepeat(
-      withSequence(
-        withTiming(1,   { duration: 900 + delay * 100 }),
-        withTiming(0.4, { duration: 900 + delay * 100 })
-      ), -1, true
-    );
-  }, []);
-
-  const anim = useAnimatedStyle(() => ({
-    transform: [{ translateY: y.value }],
-    opacity:   op.value,
-  }));
-
+function AppLogo() {
   return (
-    <Animated.Text style={[styles.floatingNote, { left: x }, anim]}>
-      {emoji}
-    </Animated.Text>
+    <View style={styles.logoRow}>
+      <View style={styles.logoIcon}>
+        <Svg width={20} height={20} viewBox="0 0 24 24" fill="none">
+          <Rect x={3} y={9} width={2.5} height={6} rx={1.25} fill="#FFFFFF" />
+          <Rect x={8} y={5} width={2.5} height={14} rx={1.25} fill="#FFFFFF" />
+          <Rect x={13} y={3} width={2.5} height={18} rx={1.25} fill="#FFFFFF" />
+          <Rect x={18} y={7} width={2.5} height={10} rx={1.25} fill="#FFFFFF" />
+        </Svg>
+      </View>
+      <Text style={styles.logoText}>Practice Tracker</Text>
+    </View>
+  );
+}
+
+function MiniContourPreview() {
+  return (
+    <View style={styles.previewCard}>
+      <View style={styles.cardHeader}>
+        <View>
+          <Text style={styles.pieceTitle}>Minuet in G</Text>
+          <Text style={styles.pieceSub}>Violin · today</Text>
+        </View>
+        <Text style={styles.pieceScore}>
+          <Text style={styles.scoreBold}>86</Text>
+          <Text style={styles.scoreTotal}> / 100</Text>
+        </Text>
+      </View>
+
+      {/* Stepped contour visualization */}
+      <View style={styles.graphContainer}>
+        <Svg width="100%" height={50} viewBox="0 0 260 50">
+          {/* Subtle dotted baseline */}
+          <Line x1={10} y1={25} x2={250} y2={25} stroke="#E2E8F0" strokeWidth={1} strokeDasharray="3,3" />
+
+          {/* Stepped note lines: in tune (teal) and off pitch (orange) */}
+          {/* Note 1: in tune */}
+          <Line x1={15} y1={36} x2={45} y2={36} stroke="#0D9488" strokeWidth={2.5} strokeLinecap="round" />
+          {/* Note 2: in tune */}
+          <Line x1={55} y1={32} x2={85} y2={32} stroke="#0D9488" strokeWidth={2.5} strokeLinecap="round" />
+          {/* Note 3: off pitch (raised) */}
+          <Line x1={95} y1={20} x2={130} y2={20} stroke="#EA580C" strokeWidth={3.5} strokeLinecap="round" />
+          {/* Note 4: in tune */}
+          <Line x1={140} y1={28} x2={175} y2={28} stroke="#0D9488" strokeWidth={2.5} strokeLinecap="round" />
+          {/* Note 5: in tune */}
+          <Line x1={185} y1={22} x2={220} y2={22} stroke="#0D9488" strokeWidth={2.5} strokeLinecap="round" />
+        </Svg>
+
+        <View style={styles.legendRow}>
+          <View style={styles.legendItem}>
+            <View style={[styles.legendLine, { backgroundColor: '#0D9488' }]} />
+            <Text style={styles.legendText}>In tune</Text>
+          </View>
+          <View style={styles.legendItem}>
+            <View style={[styles.legendLine, { backgroundColor: '#EA580C', height: 3.5 }]} />
+            <Text style={styles.legendText}>Off pitch</Text>
+          </View>
+        </View>
+      </View>
+    </View>
   );
 }
 
@@ -67,140 +87,246 @@ export default function WelcomeScreen() {
   const insets = useSafeAreaInsets();
   const { token } = useAuthStore();
 
-  // Redirect if already logged in
   useEffect(() => {
-    if (token) router.replace('/(tabs)/home');
+    if (token) router.replace('/(tabs)/home' as any);
   }, [token]);
 
   return (
-    <View style={[styles.root, { backgroundColor: theme.background }]}>
-      {/* Hero gradient */}
-      <LinearGradient
-        colors={['#3730A3', '#4F46E5', '#818CF8']}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={[styles.hero, { paddingTop: insets.top + 40 }]}
-      >
-        {/* Floating instrument notes */}
-        {INSTRUMENTS.map((e, i) => (
-          <FloatingNote key={e} emoji={e} delay={i} x={40 + i * 62} />
-        ))}
-
-        <Animated.View entering={FadeInDown.delay(100).springify()} style={styles.heroContent}>
-          <Text style={styles.heroTitle}>Practice Tracker</Text>
-          <Text style={styles.heroSub}>
-            Pitch-perfect practice,{'\n'}every single day.
-          </Text>
-        </Animated.View>
-      </LinearGradient>
-
-      {/* Bottom sheet */}
+    <View style={[styles.container, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 20 }]}>
       <ScrollView
-        style={[styles.sheet, { backgroundColor: theme.backgroundCard }]}
-        contentContainerStyle={[styles.sheetContent, { paddingBottom: insets.bottom + 24 }]}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scrollContent}
       >
-        <Animated.View entering={FadeInUp.delay(200).springify()}>
-          <Text style={[styles.tagline, { color: theme.text, fontFamily: Fonts.heading }]}>
-            Duolingo for instrument practice.
-          </Text>
-          <Text style={[styles.desc, { color: theme.textSecondary, fontFamily: Fonts.body }]}>
-            Upload a recording, get instant pitch and timing feedback,
-            and watch your score improve every session.
-          </Text>
+        {/* App Logo */}
+        <AppLogo />
 
-          <View style={styles.features}>
-            {[
-              { icon: '🎯', text: 'Pitch accuracy to the cent' },
-              { icon: '⏱️', text: 'Onset timing & steadiness' },
-              { icon: '📈', text: 'Progress trends & streaks' },
-            ].map(f => (
-              <View key={f.icon} style={styles.featureRow}>
-                <Text style={styles.featureIcon}>{f.icon}</Text>
-                <Text style={[styles.featureText, { color: theme.textSecondary, fontFamily: Fonts.body }]}>
-                  {f.text}
-                </Text>
+        {/* Headline */}
+        <Text style={styles.headline}>
+          Practice smarter.{'\n'}Hear every cent.
+        </Text>
+
+        {/* Subtitle */}
+        <Text style={styles.subheadline}>
+          Upload a recording, get instant feedback on pitch and timing, then watch your progress build week after week.
+        </Text>
+
+        {/* Preview Card */}
+        <MiniContourPreview />
+
+        {/* Works for chips */}
+        <View style={styles.chipsSection}>
+          <View style={styles.chipRow}>
+            <Text style={styles.worksForLabel}>Works for</Text>
+            {['Voice', 'Violin', 'Guitar'].map((item) => (
+              <View key={item} style={styles.chip}>
+                <Text style={styles.chipText}>{item}</Text>
               </View>
             ))}
           </View>
-
-          <View style={styles.ctas}>
-            <Button
-              label="Get started — sign up"
-              onPress={() => router.push('/(auth)/register')}
-              fullWidth
-              size="lg"
-            />
-            <Button
-              label="I already have an account"
-              onPress={() => router.push('/(auth)/login')}
-              variant="outline"
-              fullWidth
-              size="lg"
-            />
+          <View style={styles.chipRowSecond}>
+            <View style={styles.chip}>
+              <Text style={styles.chipText}>Piano</Text>
+            </View>
           </View>
-        </Animated.View>
+        </View>
       </ScrollView>
+
+      {/* Bottom CTAs */}
+      <View style={styles.bottomActions}>
+        <Pressable
+          onPress={() => router.push('/(auth)/register' as any)}
+          style={({ pressed }) => [styles.primaryBtn, pressed && styles.pressed]}
+        >
+          <Text style={styles.primaryBtnText}>Create free account</Text>
+        </Pressable>
+
+        <Pressable
+          onPress={() => router.push('/(auth)/login' as any)}
+          style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
+        >
+          <Text style={styles.secondaryBtnText}>Log in</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root:       { flex: 1 },
-  hero: {
-    height:          280,
-    paddingHorizontal: 24,
-    overflow:        'hidden',
+  container: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+    paddingHorizontal: 20,
+    justifyContent: 'space-between',
   },
-  heroContent: { marginTop: 20 },
-  heroTitle: {
-    fontSize:   FontSize.xxxl,
-    fontFamily: Fonts.heading,
-    color:      '#FFFFFF',
-    lineHeight: FontSize.xxxl + 8,
+  scrollContent: {
+    paddingBottom: 24,
   },
-  heroSub: {
-    fontSize:   FontSize.lg,
-    color:      'rgba(255,255,255,0.85)',
-    marginTop:  8,
-    lineHeight: FontSize.lg + 8,
-    fontFamily: Fonts.body,
-  },
-  floatingNote: {
-    position: 'absolute',
-    top:      60,
-    fontSize: 30,
-  },
-  sheet: {
-    flex:           1,
-    borderTopLeftRadius:  28,
-    borderTopRightRadius: 28,
-    marginTop:      -28,
-  },
-  sheetContent: {
-    padding:  28,
-    gap:      20,
-  },
-  tagline: {
-    fontSize:   FontSize.xl,
-    fontWeight: '700',
-    lineHeight: FontSize.xl + 8,
-    marginBottom: 10,
-  },
-  desc: {
-    fontSize:   FontSize.base,
-    lineHeight: FontSize.base + 8,
-    marginBottom: 20,
-  },
-  features: {
-    gap:           12,
-    marginBottom:  24,
-  },
-  featureRow: {
+  logoRow: {
     flexDirection: 'row',
-    alignItems:    'center',
-    gap:           10,
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 28,
   },
-  featureIcon: { fontSize: 20 },
-  featureText: { fontSize: FontSize.base },
-  ctas: { gap: 12 },
+  logoIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: '#4F46E5',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logoText: {
+    fontSize: 17,
+    fontFamily: Fonts.heading,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  headline: {
+    fontSize: 32,
+    fontFamily: Fonts.heading,
+    fontWeight: '800',
+    color: '#0F172A',
+    lineHeight: 38,
+    marginBottom: 12,
+  },
+  subheadline: {
+    fontSize: 14,
+    fontFamily: Fonts.body,
+    color: '#64748B',
+    lineHeight: 21,
+    marginBottom: 24,
+  },
+  previewCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 20,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.04,
+    shadowRadius: 10,
+    elevation: 2,
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 12,
+  },
+  pieceTitle: {
+    fontSize: 16,
+    fontFamily: Fonts.heading,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  pieceSub: {
+    fontSize: 12,
+    fontFamily: Fonts.body,
+    color: '#94A3B8',
+    marginTop: 2,
+  },
+  pieceScore: {
+    fontSize: 15,
+    color: '#0F172A',
+    fontFamily: Fonts.mono,
+  },
+  scoreBold: {
+    fontWeight: '700',
+  },
+  scoreTotal: {
+    color: '#94A3B8',
+    fontWeight: '400',
+  },
+  graphContainer: {
+    marginTop: 6,
+  },
+  legendRow: {
+    flexDirection: 'row',
+    gap: 16,
+    marginTop: 10,
+  },
+  legendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  legendLine: {
+    width: 14,
+    height: 2.5,
+    borderRadius: 1.5,
+  },
+  legendText: {
+    fontSize: 11,
+    fontFamily: Fonts.body,
+    color: '#64748B',
+  },
+  chipsSection: {
+    gap: 8,
+  },
+  chipRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  chipRowSecond: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  worksForLabel: {
+    fontSize: 13,
+    fontFamily: Fonts.body,
+    color: '#64748B',
+    marginRight: 4,
+  },
+  chip: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+  },
+  chipText: {
+    fontSize: 13,
+    fontFamily: Fonts.body,
+    fontWeight: '500',
+    color: '#334155',
+  },
+  bottomActions: {
+    gap: 10,
+    paddingTop: 8,
+  },
+  primaryBtn: {
+    backgroundColor: '#4F46E5',
+    borderRadius: 14,
+    height: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  primaryBtnText: {
+    fontSize: 15,
+    fontFamily: Fonts.body,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  secondaryBtn: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 14,
+    height: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  secondaryBtnText: {
+    fontSize: 15,
+    fontFamily: Fonts.body,
+    fontWeight: '600',
+    color: '#0F172A',
+  },
+  pressed: {
+    opacity: 0.85,
+  },
 });
