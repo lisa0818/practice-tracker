@@ -57,7 +57,7 @@ export default function TimingScreen() {
 
   // Real calculated beat notes from the model
   const beatNotes = session?.result?.note_events && session.result.note_events.length > 0
-    ? session.result.note_events.map((n, i) => {
+    ? session.result.note_events.filter((n) => n.onset_error_ms != null).map((n, i) => {
         const name = n.label || midiToName(n.midi) || `N${i + 1}`;
         const ms = Math.round(n.onset_error_ms ?? 0);
         const onBeat = n.early_late === 'onBeat' || Math.abs(ms) <= 25;

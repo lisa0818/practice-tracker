@@ -58,12 +58,15 @@ def segment_notes(
     conf_thresh: float = 0.5,
     min_note_s:  float = 0.05,   # minimum note duration
     silence_gap: float = 0.04,   # gap to split notes
+    split_semitones: float = 0.7,  # pitch move that starts a new note
+    settle_frames:   int   = 3,    # frames the new pitch must hold (~30 ms)
 ) -> list[dict]:
     """
     Segment CREPE frame output into note events.
     Returns list of {onset_s, offset_s, midi, avg_hz, confidence, cents_error}.
     """
     notes = []
+    pending       = []   # frames that may be the start of a new note
     in_note       = False
     note_start    = 0.0
     note_frames   = []
@@ -79,16 +82,27 @@ def segment_notes(
             note_conf   = [float(conf)]
 
         elif voiced and in_note:
-            # Check for large pitch jump (octave error guard ±1 octave)
-            prev_midi = hz_to_midi(note_frames[-1], tuning)
-            curr_midi = hz_to_midi(hz, tuning)
-            if abs(curr_midi - prev_midi) > 12:
-                # End old note, start new
-                _close_note(notes, note_frames, note_conf, note_start, float(t), tuning, min_note_s)
-                note_start  = float(t)
-                note_frames = [hz]
-                note_conf   = [float(conf)]
+            # Legato playing has no silence between notes, so also split when the
+            # pitch moves away from the current note and settles somewhere new.
+            # Vibrato (~±30¢) stays well under split_semitones and is ignored.
+            ref = float(np.median([hz_to_midi(h, tuning) for h in note_frames]))
+            if abs(hz_to_midi(hz, tuning) - ref) > split_semitones:
+                pending.append((float(t), hz, float(conf)))
+                if len(pending) >= settle_frames:
+                    pm = [hz_to_midi(p[1], tuning) for p in pending]
+                    if max(pm) - min(pm) <= 0.5:
+                        _close_note(notes, note_frames, note_conf, note_start, pending[0][0], tuning, min_note_s)
+                        note_start  = pending[0][0]
+                        note_frames = [p[1] for p in pending]
+                        note_conf   = [p[2] for p in pending]
+                        pending = []
+                    else:
+                        pending.pop(0)   # still gliding — wait for the pitch to settle
             else:
+                for _, p_hz, p_conf in pending:   # blip, not a new note
+                    note_frames.append(p_hz)
+                    note_conf.append(p_conf)
+                pending = []
                 note_frames.append(hz)
                 note_conf.append(float(conf))
 
@@ -98,6 +112,7 @@ def segment_notes(
             in_note = False
             note_frames = []
             note_conf   = []
+            pending     = []
 
     # Close any trailing note
     if in_note and note_frames:
@@ -126,6 +141,47 @@ def _close_note(notes, frames, conf_list, start, end, tuning, min_dur):
 
 # ── Timing alignment ──────────────────────────────────────────────────────────
 
+def _fit_beat_grid(onsets: np.ndarray, hint_period: Optional[float]) -> tuple[float, float]:
+    """
+    Find the (period, phase) of the regular grid that best explains the onsets.
+    Uses the circular resultant length of onsets modulo each candidate period,
+    and prefers the longest period that fits nearly as well as the best one
+    (shorter periods trivially fit anything).
+    """
+    if len(onsets) < 3:
+        period = hint_period or 0.6
+        return period, float(onsets[0]) if len(onsets) else 0.0
+
+    periods = np.arange(0.25, 2.0, 0.002)
+    fits = []
+    for p in periods:
+        ang = 2 * np.pi * onsets / p
+        z = np.mean(np.exp(1j * ang))
+        fits.append((abs(z), float(np.angle(z))))
+    strengths = np.array([f[0] for f in fits])
+
+    best = strengths.max()
+    good = np.where(strengths >= best * 0.95)[0]
+    # Longest period among the near-best fits (local peak, not just any index)
+    idx = int(good[-1])
+    period = float(periods[idx])
+    phase = fits[idx][1] / (2 * np.pi) * period
+
+    # The coarse search only resolves the period to a few ms, which adds up to
+    # a visible drift over a long piece. Refine with a least-squares line
+    # through (beat number, onset time), ignoring onsets that don't fit.
+    for window in (0.25, 0.18, 0.12, 0.1, 0.1):   # tighten as the fit improves
+        k = np.round((onsets - phase) / period)
+        resid = onsets - (phase + k * period)
+        inl = np.abs(resid) < window * period
+        if inl.sum() < 3 or len(np.unique(k[inl])) < 3:
+            break
+        A = np.vstack([np.ones(int(inl.sum())), k[inl]]).T
+        (phase, period), *_ = np.linalg.lstsq(A, onsets[inl], rcond=None)
+        phase, period = float(phase), float(period)
+    return period, phase
+
+
 def align_to_beat_grid(
     notes:      list[dict],
     bpm:        float,
@@ -135,19 +191,39 @@ def align_to_beat_grid(
     """
     Compute onset_error_ms and early_late for each note vs a regular beat grid.
     """
-    if bpm <= 0 or not notes:
+    if not notes:
         return notes
 
-    beat_period = 60.0 / bpm
-    annotated   = []
-    for note in notes:
-        onset = note["onset_s"]
-        # Find nearest beat
-        beat_num = round((onset - offset_s) / beat_period)
-        nearest_beat = offset_s + beat_num * beat_period
-        err_ms = (onset - nearest_beat) * 1000.0
+    # Fit the grid to the performance itself: the detected BPM can be off by
+    # a factor and the first note rarely lands at t=0.
+    beat_period, offset_s = _fit_beat_grid(
+        np.array([n["onset_s"] for n in notes]), 60.0 / bpm if bpm > 0 else None
+    )
+    # Slow pieces have long beats, so allow a little more slack than 50 ms.
+    tol_ms = min(80.0, max(50.0, beat_period * 1000.0 * 0.06))
 
-        if abs(err_ms) <= 20:
+    errs = []
+    for note in notes:
+        beat_num = round((note["onset_s"] - offset_s) / beat_period)
+        errs.append((note["onset_s"] - (offset_s + beat_num * beat_period)) * 1000.0)
+
+    # Notes after the last one that sits on the grid are the room ringing or
+    # the player putting the instrument down, not part of the performance.
+    # Those trailing blips are much shorter than a real note, so the
+    # performance ends at the last note of reasonable length.
+    min_len = 0.5 * beat_period
+    last_ok = max(
+        (i for i, n in enumerate(notes) if n.get("offset_s", 0) - n["onset_s"] >= min_len),
+        default=len(notes) - 1,
+    )
+
+    annotated = []
+    for i, (note, err_ms) in enumerate(zip(notes, errs)):
+        if i > last_ok:
+            annotated.append(dict(note))   # no timing fields → skipped in scoring
+            continue
+
+        if abs(err_ms) <= tol_ms:
             el = "onBeat"
         elif err_ms < 0:
             el = "early"

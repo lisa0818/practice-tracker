@@ -182,7 +182,7 @@ def analyze_polyphonic_file(
     timing_metrics = compute_timing_score(notes)
 
     if notes:
-        in_tune_notes = sum(1 for n in notes if abs(n["cents_error"]) <= 20)
+        in_tune_notes = sum(1 for n in notes if abs(n["cents_error"]) <= 25)
         in_tune_pct   = round(100.0 * in_tune_notes / len(notes), 1)
         avg_cents     = round(float(np.mean([n["cents_error"] for n in notes])), 1)
         pitch_score   = round(max(0.0, min(100.0, in_tune_pct - max(0, abs(avg_cents) - 15) * 0.4)), 1)

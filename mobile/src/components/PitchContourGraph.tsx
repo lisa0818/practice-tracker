@@ -11,6 +11,8 @@ import { FontSize, Fonts } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import type { NoteEvent } from '@/services/api';
 
+const IN_TUNE_CENTS = 25;
+
 interface PitchContourGraphProps {
   notes:      NoteEvent[];
   totalSecs?: number;
@@ -86,7 +88,7 @@ export function PitchContourGraph({ notes, totalSecs, height = 220 }: PitchConto
           const x1 = xOf(note.onset_s);
           const x2 = xOf(note.offset_s);
           const y  = yOf(note.midi);
-          const hasError = note.cents_error !== null && Math.abs(note.cents_error ?? 0) > 20;
+          const hasError = note.cents_error !== null && Math.abs(note.cents_error ?? 0) > IN_TUNE_CENTS;
           const color   = hasError ? theme.offPitch : theme.inTune;
           const sw      = hasError ? 4 : 2;
 

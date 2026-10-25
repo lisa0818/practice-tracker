@@ -12,7 +12,7 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Circle, Line } from 'react-native-svg';
+import Svg, { Circle, Line, Rect, Text as SvgText } from 'react-native-svg';
 
 import { Fonts, FontSize } from '@/constants/theme';
 import { getSession, type SessionDetail } from '@/services/api';
@@ -27,6 +27,19 @@ const DEFAULT_NOTES = [
   { label: 'B4', midi: 71, onset_s: 3.8, offset_s: 4.2, cents_error: +27.0 },
   { label: 'C5', midi: 72, onset_s: 4.4, offset_s: 4.8, cents_error: 1.8 },
 ];
+
+// Per-note chart geometry
+const COL_W = 46;          // fixed width per note — the chart scrolls instead of squeezing
+const CHART_H = 190;
+const Y_AXIS_W = 30;
+const PLOT_TOP = 14;
+const PLOT_BOTTOM = CHART_H - 34;
+const IN_TUNE_CENTS = 25;
+
+// cents (-50..+50) → y coordinate
+function centsToY(c: number): number {
+  return PLOT_TOP + ((50 - c) / 100) * (PLOT_BOTTOM - PLOT_TOP);
+}
 
 function midiToName(midi: number): string {
   const names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -44,7 +57,6 @@ export default function PitchResultScreen() {
   const insets = useSafeAreaInsets();
 
   const [session, setSession] = useState<SessionDetail | null>(null);
-  const [activeTab, setActiveTab] = useState<'contour' | 'notes'>('contour');
 
   useEffect(() => {
     if (!id || id.length < 20) return;
@@ -66,27 +78,10 @@ export default function PitchResultScreen() {
       }))
     : DEFAULT_NOTES.map((n, idx) => ({ ...n, idx: idx + 1 }));
 
-  // Dynamic range for Y-axis
-  const midis = notes.map((n) => n.midi);
-  const minMidi = Math.min(...midis);
-  const maxMidi = Math.max(...midis);
-  const span = Math.max(7, maxMidi - minMidi);
-  const topMidi = maxMidi;
-  const bottomMidi = minMidi;
-
-  // Build 8 pitch labels across the range
-  const pitchLabels: string[] = [];
-  const labelStep = Math.max(1, Math.round(span / 7));
-  for (let m = topMidi; m >= bottomMidi - 1 && pitchLabels.length < 8; m -= labelStep) {
-    pitchLabels.push(midiToName(m));
-  }
-  while (pitchLabels.length < 8) {
-    const lastMidi = topMidi - pitchLabels.length;
-    pitchLabels.push(midiToName(lastMidi));
-  }
+  const chartW = notes.length * COL_W;
 
   // Calculated metrics
-  const inTuneCount = notes.filter((n) => Math.abs(n.cents_error ?? 0) <= 20).length;
+  const inTuneCount = notes.filter((n) => Math.abs(n.cents_error ?? 0) <= IN_TUNE_CENTS).length;
   const inTunePct = session?.result?.in_tune_pct != null
     ? Math.round(session.result.in_tune_pct)
     : Math.round((inTuneCount / notes.length) * 100);
@@ -99,7 +94,7 @@ export default function PitchResultScreen() {
   const pitchScore = Math.round(session?.result?.pitch_score ?? session?.result?.overall_score ?? 84);
 
   // Notes with intonation issues
-  const outOfTuneNotes = notes.filter((n) => Math.abs(n.cents_error ?? 0) > 20);
+  const outOfTuneNotes = notes.filter((n) => Math.abs(n.cents_error ?? 0) > IN_TUNE_CENTS);
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
@@ -176,124 +171,96 @@ export default function PitchResultScreen() {
         {/* Pitch Contour Card */}
         <View style={styles.contourCard}>
           <View style={styles.contourHeader}>
-            <Text style={styles.contourTitle}>Pitch contour</Text>
-            <View style={styles.segmentedToggle}>
-              <Pressable
-                onPress={() => setActiveTab('contour')}
-                style={[styles.segBtn, activeTab === 'contour' && styles.segBtnActive]}
-              >
-                <Text style={[styles.segText, activeTab === 'contour' && styles.segTextActive]}>
-                  Contour
-                </Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setActiveTab('notes')}
-                style={[styles.segBtn, activeTab === 'notes' && styles.segBtnActive]}
-              >
-                <Text style={[styles.segText, activeTab === 'notes' && styles.segTextActive]}>
-                  Notes
-                </Text>
-              </Pressable>
-            </View>
+            <Text style={styles.contourTitle}>Pitch accuracy by note</Text>
           </View>
 
-          {/* Graph with Y Axis Labels and Stepped Segments */}
+          {/* Per-note tuning chart: one fixed-width column per note, scrolls horizontally */}
           <View style={styles.graphWrapper}>
-            <View style={styles.yAxis}>
-              {pitchLabels.map((p, idx) => (
-                <Text key={`${p}-${idx}`} style={styles.pitchText}>{p}</Text>
+            <Svg width={Y_AXIS_W} height={CHART_H}>
+              {[50, IN_TUNE_CENTS, 0, -IN_TUNE_CENTS, -50].map((c) => (
+                <SvgText
+                  key={c}
+                  x={Y_AXIS_W - 4}
+                  y={centsToY(c) + 3}
+                  textAnchor="end"
+                  fontSize={9}
+                  fill="#94A3B8"
+                >
+                  {c > 0 ? `+${c}` : `${c}`}
+                </SvgText>
               ))}
-            </View>
+            </Svg>
 
-            <View style={styles.graphSvgContainer}>
-              <Svg width="100%" height={160} viewBox="0 0 240 160">
-                {/* Horizontal guide lines for each note */}
-                {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
-                  <Line
-                    key={i}
-                    x1={0}
-                    y1={i * 20 + 10}
-                    x2={240}
-                    y2={i * 20 + 10}
-                    stroke="#F1F5F9"
-                    strokeWidth={1}
-                  />
-                ))}
+            <ScrollView horizontal showsHorizontalScrollIndicator>
+              <Svg width={chartW} height={CHART_H}>
+                {/* In-tune band */}
+                <Rect
+                  x={0}
+                  y={centsToY(IN_TUNE_CENTS)}
+                  width={chartW}
+                  height={centsToY(-IN_TUNE_CENTS) - centsToY(IN_TUNE_CENTS)}
+                  fill="#F0FDFA"
+                />
+                {/* Zero line */}
+                <Line x1={0} y1={centsToY(0)} x2={chartW} y2={centsToY(0)} stroke="#CBD5E1" strokeWidth={1} />
 
-                {/* Dynamically draw a line segment for each note calculated by the model */}
                 {notes.map((n, i) => {
-                  const midiFrac = Math.max(0, Math.min(1, (n.midi - minMidi) / Math.max(1, maxMidi - minMidi)));
-                  const baseY = 145 - midiFrac * (145 - 20);
-                  const centsOffset = (n.cents_error ?? 0) * 0.15;
-                  const y = Math.max(12, Math.min(148, baseY - centsOffset));
-                  const stepW = 220 / Math.max(1, notes.length);
-                  const x1 = i * stepW + 8;
-                  const x2 = x1 + Math.max(14, stepW * 0.72);
-                  const inTune = Math.abs(n.cents_error ?? 0) <= 20;
+                  const cents = n.cents_error ?? 0;
+                  const inTune = Math.abs(cents) <= IN_TUNE_CENTS;
+                  const cx = i * COL_W + COL_W / 2;
+                  const y0 = centsToY(0);
+                  const y1 = centsToY(Math.max(-50, Math.min(50, cents)));
+                  const barTop = Math.min(y0, y1);
+                  const barH = Math.max(3, Math.abs(y1 - y0));
+                  const color = inTune ? '#0D9488' : '#EA580C';
+                  const sign = cents > 0 ? '+' : '';
+                  const labelY = cents >= 0 ? barTop - 4 : barTop + barH + 11;
 
                   return (
-                    <Line
-                      key={i}
-                      x1={x1}
-                      y1={y}
-                      x2={x2}
-                      y2={y}
-                      stroke={inTune ? '#0D9488' : '#EA580C'}
-                      strokeWidth={inTune ? 3.5 : 4.5}
-                      strokeLinecap="round"
-                    />
+                    <React.Fragment key={i}>
+                      <Rect
+                        x={cx - 9}
+                        y={cents >= 0 ? barTop : y0}
+                        width={18}
+                        height={barH}
+                        rx={3}
+                        fill={color}
+                      />
+                      <SvgText
+                        x={cx}
+                        y={labelY}
+                        textAnchor="middle"
+                        fontSize={9}
+                        fontWeight="700"
+                        fill={color}
+                      >
+                        {sign}{Math.round(cents)}¢
+                      </SvgText>
+                      <SvgText x={cx} y={CHART_H - 16} textAnchor="middle" fontSize={10} fontWeight="700" fill="#0F172A">
+                        {n.label || midiToName(n.midi)}
+                      </SvgText>
+                      <SvgText x={cx} y={CHART_H - 4} textAnchor="middle" fontSize={8} fill="#94A3B8">
+                        {i + 1}
+                      </SvgText>
+                    </React.Fragment>
                   );
                 })}
               </Svg>
-
-              {/* Dynamic Cents Callout Tags for off-pitch notes */}
-              {notes.map((n, i) => {
-                const isOff = Math.abs(n.cents_error ?? 0) > 20;
-                if (!isOff) return null;
-                const midiFrac = Math.max(0, Math.min(1, (n.midi - minMidi) / Math.max(1, maxMidi - minMidi)));
-                const baseY = 145 - midiFrac * (145 - 20);
-                const centsOffset = (n.cents_error ?? 0) * 0.15;
-                const y = Math.max(12, Math.min(148, baseY - centsOffset));
-                const stepW = 220 / Math.max(1, notes.length);
-                const x1 = i * stepW + 8;
-                const sign = (n.cents_error ?? 0) > 0 ? '+' : '';
-                const tagTop = (n.cents_error ?? 0) > 0 ? Math.max(2, y - 24) : Math.min(136, y + 6);
-
-                return (
-                  <View
-                    key={`tag-${i}`}
-                    style={[
-                      styles.centsTag,
-                      {
-                        left: Math.max(0, Math.min(195, x1 - 6)),
-                        top: tagTop,
-                      },
-                    ]}
-                  >
-                    <Text style={styles.centsTagText}>{sign}{Math.round(n.cents_error ?? 0)}¢</Text>
-                  </View>
-                );
-              })}
-            </View>
-          </View>
-
-          {/* Time axis */}
-          <View style={styles.timeAxis}>
-            <Text style={styles.timeText}>0:00</Text>
-            <Text style={styles.timeText}>0:48</Text>
+            </ScrollView>
           </View>
 
           {/* Legend */}
           <View style={styles.legendRow}>
             <View style={styles.legendItem}>
               <View style={[styles.legendBar, { backgroundColor: '#0D9488' }]} />
-              <Text style={styles.legendText}>In tune (within 20 c)</Text>
+              <Text style={styles.legendText}>In tune (within {IN_TUNE_CENTS} ¢)</Text>
             </View>
             <View style={styles.legendItem}>
               <View style={[styles.legendBar, { backgroundColor: '#EA580C', height: 3.5 }]} />
               <Text style={styles.legendText}>Off pitch</Text>
             </View>
           </View>
+          <Text style={styles.scrollHint}>Swipe sideways to see every note</Text>
         </View>
 
         {/* Dynamic Notes with Issues Cards */}
@@ -518,53 +485,19 @@ const styles = StyleSheet.create({
   },
   graphWrapper: {
     flexDirection: 'row',
-    alignItems: 'center',
   },
-  yAxis: {
-    width: 26,
-    height: 160,
-    justifyContent: 'space-between',
-    paddingVertical: 2,
-  },
-  pitchText: {
-    fontSize: 10,
-    fontFamily: Fonts.mono,
+  scrollHint: {
+    fontSize: 11,
+    fontFamily: Fonts.body,
     color: '#94A3B8',
-  },
-  graphSvgContainer: {
-    flex: 1,
-    height: 160,
-    position: 'relative',
-  },
-  centsTag: {
-    position: 'absolute',
-    backgroundColor: '#EA580C',
-    paddingVertical: 1,
-    paddingHorizontal: 5,
-    borderRadius: 4,
-  },
-  centsTagText: {
-    fontSize: 9,
-    fontFamily: Fonts.mono,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  timeAxis: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
     marginTop: 6,
-    paddingLeft: 26,
-  },
-  timeText: {
-    fontSize: 10,
-    fontFamily: Fonts.mono,
-    color: '#94A3B8',
+    paddingLeft: Y_AXIS_W,
   },
   legendRow: {
     flexDirection: 'row',
     gap: 16,
     marginTop: 14,
-    paddingLeft: 26,
+    paddingLeft: Y_AXIS_W,
   },
   legendItem: {
     flexDirection: 'row',
