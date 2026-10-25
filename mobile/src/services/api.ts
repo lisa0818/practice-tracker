@@ -7,7 +7,7 @@ import axios, { AxiosError } from 'axios';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 // Change to your Cloud Run URL in production.
-const BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://10.0.2.2:8000';
+const BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'https://core-api-571568987946.asia-south1.run.app';
 
 export const apiClient = axios.create({
   baseURL: BASE_URL,

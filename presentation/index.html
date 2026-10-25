@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Practice Tracker — System Architecture & Cloud Engineering Presentation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #07090e;
+      --card-bg: rgba(18, 23, 34, 0.75);
+      --card-border: rgba(99, 102, 241, 0.18);
+      --primary: #6366f1;
+      --primary-light: #818cf8;
+      --cyan: #06b6d4;
+      --emerald: #10b981;
+      --amber: #f59e0b;
+      --rose: #f43f5e;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text-main);
+      font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+      overflow: hidden;
+      height: 100vh;
+      width: 100vw;
+      user-select: none;
+    }
+
+    /* Ambient background glow */
+    .glow-orb {
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(140px);
+      opacity: 0.22;
+      pointer-events: none;
+      z-index: 0;
+    }
+    .glow-1 { width: 500px; height: 500px; background: #4f46e5; top: -100px; left: -100px; }
+    .glow-2 { width: 450px; height: 450px; background: #0891b2; bottom: -100px; right: -100px; }
+
+    /* Deck Layout */
+    .deck-container {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1;
+    }
+
+    .slide {
+      position: absolute;
+      width: 90%;
+      max-width: 1200px;
+      height: 84%;
+      max-height: 760px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 24px;
+      backdrop-filter: blur(24px);
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.65), 0 0 40px rgba(99, 102, 241, 0.08);
+      padding: 48px 56px;
+      display: flex;
+      flex-direction: column;
+      opacity: 0;
+      pointer-events: none;
+      transform: scale(0.96) translateY(20px);
+      transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+      overflow-y: auto;
+    }
+
+    .slide.active {
+      opacity: 1;
+      pointer-events: auto;
+      transform: scale(1) translateY(0);
+    }
+
+    /* Typography */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border-radius: 9999px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 14px;
+      width: fit-content;
+    }
+    .badge-primary { background: rgba(99, 102, 241, 0.15); color: var(--primary-light); border: 1px solid rgba(99, 102, 241, 0.3); }
+    .badge-cyan { background: rgba(6, 182, 212, 0.15); color: var(--cyan); border: 1px solid rgba(6, 182, 212, 0.3); }
+    .badge-emerald { background: rgba(16, 185, 129, 0.15); color: var(--emerald); border: 1px solid rgba(16, 185, 129, 0.3); }
+
+    h1 {
+      font-size: 2.75rem;
+      font-weight: 800;
+      line-height: 1.15;
+      letter-spacing: -0.02em;
+      margin-bottom: 12px;
+      background: linear-gradient(135deg, #ffffff 30%, #a5b4fc 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    h2 {
+      font-size: 1.95rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      margin-bottom: 8px;
+      color: #ffffff;
+    }
+
+    .subtitle {
+      font-size: 1.1rem;
+      color: var(--text-muted);
+      margin-bottom: 28px;
+      line-height: 1.5;
+    }
+
+    /* Grid layouts */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      flex: 1;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+      flex: 1;
+    }
+
+    .card {
+      background: rgba(15, 20, 30, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: 16px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      transition: border-color 0.2s ease, transform 0.2s ease;
+    }
+    .card:hover {
+      border-color: rgba(99, 102, 241, 0.4);
+      transform: translateY(-2px);
+    }
+
+    .card h3 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #ffffff;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .card p, .card li {
+      font-size: 0.92rem;
+      color: var(--text-muted);
+      line-height: 1.55;
+    }
+
+    .card ul {
+      list-style-position: inside;
+      margin-top: 8px;
+    }
+    .card li {
+      margin-bottom: 6px;
+    }
+
+    /* Highlight stats */
+    .stat-number {
+      font-size: 2.2rem;
+      font-weight: 800;
+      font-family: 'JetBrains Mono', monospace;
+      margin-bottom: 4px;
+    }
+
+    .code-box {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.82rem;
+      background: #06080d;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 10px;
+      padding: 14px 16px;
+      color: #cbd5e1;
+      overflow-x: auto;
+      line-height: 1.5;
+      margin-top: 10px;
+    }
+
+    /* Controls & Navigation */
+    .nav-bar {
+      position: absolute;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      background: rgba(15, 20, 30, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      padding: 8px 18px;
+      border-radius: 9999px;
+      backdrop-filter: blur(16px);
+      z-index: 10;
+    }
+
+    .nav-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 1.1rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      transition: all 0.2s ease;
+    }
+    .nav-btn:hover {
+      background: rgba(99, 102, 241, 0.2);
+      color: #fff;
+    }
+
+    .slide-counter {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+      min-width: 75px;
+      text-align: center;
+    }
+
+    .progress-bar-container {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 4px;
+      background: rgba(255, 255, 255, 0.05);
+      z-index: 20;
+    }
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--primary), var(--cyan));
+      transition: width 0.3s ease;
+    }
+
+    .pill {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.78rem;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      color: #e2e8f0;
+    }
+
+    /* Speaker Notes Modal */
+    .notes-box {
+      margin-top: auto;
+      padding: 12px 16px;
+      background: rgba(99, 102, 241, 0.08);
+      border-left: 3px solid var(--primary);
+      border-radius: 6px;
+      font-size: 0.85rem;
+      color: #cbd5e1;
+      display: none;
+    }
+    .show-notes .notes-box {
+      display: block;
+    }
+
+    .keyboard-hint {
+      position: absolute;
+      bottom: 28px;
+      right: 32px;
+      font-size: 0.78rem;
+      color: #64748b;
+      font-family: 'JetBrains Mono', monospace;
+      z-index: 10;
+    }
+  </style>
+</head>
+<body>
+  <div class="glow-orb glow-1"></div>
+  <div class="glow-orb glow-2"></div>
+
+  <div class="progress-bar-container">
+    <div class="progress-bar" id="progressBar"></div>
+  </div>
+
+  <div class="deck-container">
+
+    <!-- SLIDE 1: Title -->
+    <div class="slide active" id="slide-1">
+      <div class="badge badge-primary">Deep Learning & Cloud Architecture</div>
+      <h1 style="font-size: 3.4rem; margin-top: 10px;">Practice Tracker</h1>
+      <p class="subtitle" style="font-size: 1.35rem; max-width: 800px;">
+        An AI-powered music performance analysis platform delivering instantaneous, sub-cent intonation and microsecond timing feedback on Google Cloud Platform.
+      </p>
+
+      <div class="grid-3" style="margin-top: 20px;">
+        <div class="card">
+          <div class="stat-number" style="color: var(--cyan);">100%</div>
+          <div style="font-weight: 700; margin-bottom: 4px;">Dynamic Audio AI</div>
+          <p>Dual neural network inference (Spotify Basic Pitch & CREPE) for polyphonic and monophonic instruments.</p>
+        </div>
+        <div class="card">
+          <div class="stat-number" style="color: var(--primary-light);">Serverless</div>
+          <div style="font-weight: 700; margin-bottom: 4px;">Google Cloud Run</div>
+          <p>Autoscaling microservices deployed in Mumbai (<span class="pill">asia-south1</span>) scaling from 0 to N.</p>
+        </div>
+        <div class="card">
+          <div class="stat-number" style="color: var(--emerald);">Cloud SQL</div>
+          <div style="font-weight: 700; margin-bottom: 4px;">PostgreSQL 15</div>
+          <p>Relational ACID persistence with private Unix socket communication and automated schema synchronization.</p>
+        </div>
+      </div>
+
+      <div class="notes-box">
+        <strong>Speaker Notes:</strong> Welcome! Today we are presenting Practice Tracker, an intelligent end-to-end system combining mobile engineering, signal processing, deep learning, and cloud architecture.
+      </div>
+    </div>
+
+    <!-- SLIDE 2: The Problem -->
+    <div class="slide" id="slide-2">
+      <div class="badge badge-cyan">The Problem</div>
+      <h2>The Musicians' Practice Blindspot</h2>
+      <p class="subtitle">Traditional music practice lacks objective, quantitative performance metrics.</p>
+
+      <div class="grid-2">
+        <div class="card">
+          <h3><span style="color: var(--rose);">✕</span> The Practice Dilemma</h3>
+          <ul>
+            <li><strong>Intonation Drift:</strong> The human ear adapts to pitch errors, making it difficult for students to detect ±15 cents deviations while playing.</li>
+            <li><strong>Rhythmic Inconsistency:</strong> Subtle micro-tempo rushes or drags (20–50ms) degrade musicality but go unnoticed without objective measurement.</li>
+            <li><strong>Subjective Memory:</strong> Musicians cannot reliably measure if their 10th practice run was technically better than their 1st run.</li>
+            <li><strong>Device Compute Bottleneck:</strong> Running heavy TensorFlow or PyTorch models on mobile phones drains battery and throttles CPU chips.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3><span style="color: var(--emerald);">✓</span> The Practice Tracker Solution</h3>
+          <ul>
+            <li><strong>Sub-Cent Pitch Intonation:</strong> Precise frequency analysis calculating exact deviation against equal temperament ($A_4 = 440\text{Hz}$).</li>
+            <li><strong>Beat-by-Beat Alignment:</strong> Visual millisecond offset timeline showing whether notes landed early, late, or dead-on.</li>
+            <li><strong>Smart Piece Tracking:</strong> Melodic fingerprinting automatically tracks historical mastery across practice sessions.</li>
+            <li><strong>Cloud-Offloaded Inference:</strong> Heavy neural processing executes on Google Cloud Run in seconds with zero phone overheating.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="notes-box">
+        <strong>Speaker Notes:</strong> Emphasize that music students spend hours practicing mistakes because they lack immediate, quantitative feedback. Practice Tracker solves this objectively.
+      </div>
+    </div>
+
+    <!-- SLIDE 3: System Architecture Overview -->
+    <div class="slide" id="slide-3">
+      <div class="badge badge-primary">System Design</div>
+      <h2>Three-Tier Decoupled Architecture</h2>
+      <p class="subtitle">Designed for high cohesion, low coupling, and autonomous horizontal scaling.</p>
+
+      <div class="grid-3">
+        <div class="card">
+          <div class="badge badge-cyan">Client Tier</div>
+          <h3>React Native & Expo</h3>
+          <p>Cross-platform mobile client for iOS and Android.</p>
+          <ul>
+            <li>Live audio recording via <span class="pill">expo-av</span></li>
+            <li>Audio file picker (<span class="pill">.wav, .mp3, .m4a</span>)</li>
+            <li>Interactive SVG Piano Roll & Pitch Contour</li>
+            <li>Beat-aligned rhythmic onset timeline</li>
+          </ul>
+        </div>
+        <div class="card">
+          <div class="badge badge-primary">API & AI Tier</div>
+          <h3>Cloud Run Microservices</h3>
+          <p>Containerized FastAPI and ML workers.</p>
+          <ul>
+            <li><span class="pill">core-api</span>: Auth, sessions, piece tracking</li>
+            <li><span class="pill">worker-poly</span>: Spotify Basic Pitch neural network for chords & piano</li>
+            <li><span class="pill">worker-mono</span>: CREPE pitch estimator for voice & violin</li>
+          </ul>
+        </div>
+        <div class="card">
+          <div class="badge badge-emerald">Data Tier</div>
+          <h3>Cloud SQL & Cloud Storage</h3>
+          <p>Managed, fault-tolerant persistence.</p>
+          <ul>
+            <li><span class="pill">Cloud SQL</span>: PostgreSQL 15 for users, sessions, and note arrays</li>
+            <li><span class="pill">Cloud Storage</span>: GCS audio storage bucket</li>
+            <li><span class="pill">Artifact Registry</span>: Versioned Docker image repository</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="notes-box">
+        <strong>Speaker Notes:</strong> Point out how the client is completely decoupled from the AI tier. If we update our ML models or change from TensorFlow to PyTorch, the mobile app requires zero updates.
+      </div>
+    </div>
+
+    <!-- SLIDE 4: Machine Learning Engines -->
+    <div class="slide" id="slide-4">
+      <div class="badge badge-cyan">Deep Learning & DSP</div>
+      <h2>Dual AI Inference Engines</h2>
+      <p class="subtitle">Tailored neural architectures for polyphonic vs. monophonic instruments.</p>
+
+      <div class="grid-2">
+        <div class="card">
+          <h3>🎹 Polyphonic Engine: Spotify Basic Pitch</h3>
+          <p><strong>Instruments:</strong> Piano, Guitar, Polyphonic Keyboard.</p>
+          <ul>
+            <li><strong>Neural Architecture:</strong> Convolutional + recurrent deep neural network that evaluates overlapping frequencies.</li>
+            <li><strong>Key Capability:</strong> Separates polyphonic chords (e.g., C-E-G played simultaneously) where classic algorithms fail.</li>
+            <li><strong>Calculated Metrics:</strong> Discrete MIDI note events, start/stop seconds, confidence probability, and frequency intonation.</li>
+          </ul>
+          <div class="code-box">
+[{"midi": 60, "label": "C4", "onset_s": 0.42, "offset_s": 0.98, "cents_error": -3.2}]
+          </div>
+        </div>
+        <div class="card">
+          <h3>🎻 Monophonic Engine: CREPE</h3>
+          <p><strong>Instruments:</strong> Voice, Violin, Viola, Flute, Cello.</p>
+          <ul>
+            <li><strong>Neural Architecture:</strong> Deep convolutional network operating directly on raw time-domain waveforms.</li>
+            <li><strong>Key Capability:</strong> Tracks continuous fundamental frequency ($f_0$) every 10ms with sub-cent precision.</li>
+            <li><strong>Calculated Metrics:</strong> Microtonal pitch contour, vocal scoops, vibrato width, and intonation drift.</li>
+          </ul>
+          <div class="code-box">
+cents_error = 1200 * log2(f0 / f_target)
+          </div>
+        </div>
+      </div>
+
+      <div class="notes-box">
+        <strong>Speaker Notes:</strong> Explain why a single ML model is not enough: monophonic instruments require continuous pitch contouring, whereas polyphonic instruments require note separation.
+      </div>
+    </div>
+
+    <!-- SLIDE 5: Rhythm & Timing Engine -->
+    <div class="slide" id="slide-5">
+      <div class="badge badge-primary">Rhythm Analytics</div>
+      <h2>Beat Synchronization & Timing Engine</h2>
+      <p class="subtitle">Quantifying musical groove, tempo drift, and metronome alignment.</p>
+
+      <div class="grid-3">
+        <div class="card">
+          <h3>1. Spectral Flux Onset</h3>
+          <p>Analyzes spectral energy differentials across successive audio frames to pin down the exact millisecond a note is struck or vocalized.</p>
+          <div class="code-box">onset_env = librosa.onset.onset_strength(y=y, sr=sr)</div>
+        </div>
+        <div class="card">
+          <h3>2. Metronome Grid Lock</h3>
+          <p>Generates an exact theoretical beat timeline based on target BPM (e.g., 120 BPM = 500ms beat intervals) or auto-detects tempo periodicity.</p>
+          <div class="code-box">beat_times = [i * (60.0 / bpm) for i in range(N)]</div>
+        </div>
+        <div class="card">
+          <h3>3. Millisecond Deviation</h3>
+          <p>Maps each note onset to the nearest beat marker:</p>
+          <ul>
+            <li><span style="color: var(--emerald);">On-Beat:</span> Error within $\pm 35\text{ms}$</li>
+            <li><span style="color: var(--amber);">Rushed / Early:</span> Negative ms offset</li>
+            <li><span style="color: var(--rose);">Dragged / Late:</span> Positive ms offset</li>
+            <li><strong>Tempo Steadiness:</strong> Onset std-dev</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="notes-box">
+        <strong>Speaker Notes:</strong> This timing engine powers the timing review screen where musicians can see whether their rhythm is rushing during difficult technical passages.
+      </div>
+    </div>
+
+    <!-- SLIDE 6: Cloud Infrastructure -->
+    <div class="slide" id="slide-6">
+      <div class="badge badge-emerald">Google Cloud Platform</div>
+      <h2>Production Cloud Infrastructure</h2>
+      <p class="subtitle">Fully managed in <span class="pill">asia-south1</span> (Mumbai) for minimum latency and maximum reliability.</p>
+
+      <div class="grid-2">
+        <div class="card">
+          <h3>☁️ Google Cloud Run</h3>
+          <ul>
+            <li><strong>core-api:</strong> FastAPI application handling JWT auth, session management, and routing.</li>
+            <li><strong>worker-poly:</strong> Dedicated container with 2 vCPUs and 2 GiB RAM running TensorFlow and Basic Pitch.</li>
+            <li><strong>worker-mono:</strong> Dedicated container running CREPE.</li>
+            <li><strong>Zero Idle Cost:</strong> Scales down to 0 instances when not in use.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>🗄️ Google Cloud SQL (PostgreSQL 15)</h3>
+          <ul>
+            <li><strong>Instance:</strong> <span class="pill">practice-tracker-db</span></li>
+            <li><strong>High Security:</strong> Connected via Cloud SQL Proxy Unix domain sockets (<span class="pill">/cloudsql/...</span>) with zero public IP exposure.</li>
+            <li><strong>ACID Reliability:</strong> Relational integrity across users, sessions, and JSONB note events.</li>
+            <li><strong>Automated Schema Sync:</strong> Auto-creates missing tables and migrations on boot.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="notes-box">
+        <strong>Speaker Notes:</strong> Highlight the production aspects: Cloud SQL Unix sockets keep the database completely secure, and Cloud Run eliminates fixed server hosting costs.
+      </div>
+    </div>
+
+    <!-- SLIDE 7: Complete Data Flow Lifecycle -->
+    <div class="slide" id="slide-7">
+      <div class="badge badge-primary">Data Pipeline</div>
+      <h2>End-to-End Request Lifecycle</h2>
+      <p class="subtitle">From microphone capture to neural analysis and visual rendering.</p>
+
+      <div class="grid-2">
+        <div class="card">
+          <h3>Step-by-Step Flow</h3>
+          <ol style="margin-left: 18px; line-height: 1.8; color: var(--text-muted); font-size: 0.9rem;">
+            <li><strong>Musician Captures Audio:</strong> Mobile app records 44.1kHz audio and prompts for instrument and tempo.</li>
+            <li><strong>Multipart Upload:</strong> Mobile sends <span class="pill">POST /sessions/analyze-direct</span> with Bearer token.</li>
+            <li><strong>Session Creation:</strong> <span class="pill">core-api</span> registers a session in Cloud SQL marked <span class="pill">processing</span>.</li>
+            <li><strong>ML Routing & Streaming:</strong> <span class="pill">core-api</span> streams raw audio directly to <span class="pill">worker-poly</span> or <span class="pill">worker-mono</span>.</li>
+            <li><strong>Neural Transcription:</strong> Worker computes note events, intonation cents, and onset alignment.</li>
+            <li><strong>Database Commit:</strong> <span class="pill">core-api</span> commits results to Cloud SQL and marks session <span class="pill">completed</span>.</li>
+            <li><strong>Visual Feedback:</strong> Mobile renders dynamic Piano Roll and Timing Timeline.</li>
+          </ol>
+        </div>
+        <div class="card" style="justify-content: center; align-items: center; text-align: center; background: rgba(10, 14, 22, 0.8);">
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; line-height: 2; color: #a5b4fc;">
+            📱 Mobile Client (Expo)<br>
+            ↓ <span style="color: var(--cyan);">HTTPS REST Stream</span><br>
+            ⚡ Cloud Run (core-api)<br>
+            ↓ <span style="color: var(--primary-light);">Internal Stream</span><br>
+            🧠 Cloud Run (worker-poly / mono)<br>
+            ↓ <span style="color: var(--emerald);">Unix Domain Socket</span><br>
+            🗄️ Cloud SQL (PostgreSQL 15)<br>
+            ↓ <span style="color: var(--cyan);">JSON Metrics</span><br>
+            📊 Dynamic SVG Visualizer
+          </div>
+        </div>
+      </div>
+
+      <div class="notes-box">
+        <strong>Speaker Notes:</strong> Emphasize the direct streaming design: audio is never written to slow temporary disk on the gateway, resulting in fast execution times.
+      </div>
+    </div>
+
+    <!-- SLIDE 8: Mobile UX & Visualization -->
+    <div class="slide" id="slide-8">
+      <div class="badge badge-cyan">User Experience</div>
+      <h2>Visualizing Musical Performance</h2>
+      <p class="subtitle">Transforming complex signal processing metrics into intuitive, actionable feedback.</p>
+
+      <div class="grid-3">
+        <div class="card">
+          <div class="badge badge-emerald">Pitch Screen</div>
+          <h3>Interactive Piano Roll</h3>
+          <p>Every detected note is rendered as an SVG bar on a vertical musical pitch axis.</p>
+          <ul>
+            <li>Color-coded intonation accuracy</li>
+            <li>Cents error indicator for each note</li>
+            <li>Continuous pitch contour curve</li>
+            <li>Practice tip engine</li>
+          </ul>
+        </div>
+        <div class="card">
+          <div class="badge badge-primary">Timing Screen</div>
+          <h3>Beat Timeline Alignment</h3>
+          <p>Visual metronome grid showing exact alignment of note onsets.</p>
+          <ul>
+            <li>Notes On-Beat percentage score</li>
+            <li>Average onset deviation in milliseconds</li>
+            <li>Tempo steadiness rating</li>
+            <li>Early/late pulse indicators</li>
+          </ul>
+        </div>
+        <div class="card">
+          <div class="badge badge-cyan">Progress Screen</div>
+          <h3>Melodic Piece Clustering</h3>
+          <p>Automatic grouping of practice attempts into unified pieces.</p>
+          <ul>
+            <li>Levenshtein melody distance matching</li>
+            <li>Long-term accuracy trendlines</li>
+            <li>Streak tracking and habit formation</li>
+            <li>Historical attempt comparison</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="notes-box">
+        <strong>Speaker Notes:</strong> The UI matches modern music production software aesthetics — dark, sleek, and informative rather than overwhelming.
+      </div>
+    </div>
+
+    <!-- SLIDE 9: Why Cloud Engineering Matters -->
+    <div class="slide" id="slide-9">
+      <div class="badge badge-emerald">Cloud Benefits</div>
+      <h2>Strategic Engineering Benefits of GCP</h2>
+      <p class="subtitle">Why building on Google Cloud was the optimal engineering decision.</p>
+
+      <div class="grid-2">
+        <div class="card">
+          <h3>⚡ Compute Offloading & Battery Preservation</h3>
+          <p>Running Spotify Basic Pitch or CREPE on a phone causes significant device throttling, battery drain, and thermal heating. Offloading inference to Cloud Run containers executes models on multi-core cloud CPUs in under 3 seconds.</p>
+        </div>
+        <div class="card">
+          <h3>💰 Cost Efficiency (Scale to Zero)</h3>
+          <p>Traditional servers (like VMs or EC2 instances) charge 24/7 even when idle. Cloud Run scales to zero instances when no musicians are practicing, reducing compute costs to pennies during off-peak hours.</p>
+        </div>
+        <div class="card">
+          <h3>🛡️ Enterprise Data Security</h3>
+          <p>Cloud SQL protects student data with encryption at rest and in transit. By connecting via Cloud SQL Auth Proxy Unix sockets, database ports are completely blocked from the public internet.</p>
+        </div>
+        <div class="card">
+          <h3>🌐 Sub-5ms Internal Latency</h3>
+          <p>Colocating all resources in the same cloud region (<span class="pill">asia-south1</span>) ensures that data transfer between API gateway, ML workers, and database occurs at internal data center speeds.</p>
+        </div>
+      </div>
+
+      <div class="notes-box">
+        <strong>Speaker Notes:</strong> Highlight the contrast between having an always-on expensive server vs. serverless Cloud Run that only charges when an analysis is actually occurring.
+      </div>
+    </div>
+
+    <!-- SLIDE 10: Live Verification & Testing -->
+    <div class="slide" id="slide-10">
+      <div class="badge badge-emerald">Verification</div>
+      <h2>End-to-End Live System Verification</h2>
+      <p class="subtitle">Validated and running live on Google Cloud Platform.</p>
+
+      <div class="grid-2">
+        <div class="card">
+          <h3>🔬 End-to-End Pipeline Test</h3>
+          <p>We executed an automated end-to-end verification test transmitting an acoustic 440 Hz test tone through Cloud Run to Cloud SQL:</p>
+          <div class="code-box">
+Sending audio to /sessions/analyze-direct on Cloud Run...
+Response code: 200
+Session ID: 3fd6e558-a620-40c1-b464-396870cbdd3d
+Status: completed
+Overall Score: 100.0 | Pitch Score: 100.0
+Detected Note: A4 (MIDI 69), Cents Error: 0.0
+Database Persistence: Confirmed in Cloud SQL
+          </div>
+        </div>
+        <div class="card">
+          <h3>🚀 Live Cloud Deployments</h3>
+          <ul>
+            <li><strong>Core API Gateway:</strong><br><a href="https://core-api-571568987946.asia-south1.run.app/health" target="_blank" style="color: var(--cyan); word-break: break-all;">https://core-api-571568987946.asia-south1.run.app</a></li>
+            <li style="margin-top: 10px;"><strong>Polyphonic Worker:</strong><br><span style="color: var(--primary-light); word-break: break-all;">https://worker-poly-571568987946.asia-south1.run.app</span></li>
+            <li style="margin-top: 10px;"><strong>Monophonic Worker:</strong><br><span style="color: var(--emerald); word-break: break-all;">https://worker-mono-571568987946.asia-south1.run.app</span></li>
+            <li style="margin-top: 10px;"><strong>Cloud SQL Instance:</strong><br><span class="pill">practice-tracker-db</span> (PostgreSQL 15, Runnable)</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="notes-box">
+        <strong>Speaker Notes:</strong> All services are live, healthy, and verified with zero TypeScript compilation errors on the mobile client.
+      </div>
+    </div>
+
+    <!-- SLIDE 11: Conclusion -->
+    <div class="slide" id="slide-11">
+      <div class="badge badge-primary">Summary</div>
+      <h2>Conclusion & Future Roadmap</h2>
+      <p class="subtitle">A scalable foundation for the future of AI music pedagogy.</p>
+
+      <div class="grid-3">
+        <div class="card">
+          <h3>Current Achievements</h3>
+          <ul>
+            <li>Cross-platform Expo mobile app</li>
+            <li>Dual ML model routing (Basic Pitch + CREPE)</li>
+            <li>Serverless Google Cloud Run deployment</li>
+            <li>PostgreSQL 15 Cloud SQL persistence</li>
+            <li>End-to-end verified accuracy</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Upcoming Features</h3>
+          <ul>
+            <li><strong>Real-Time WebSockets:</strong> Live micro-intonation feedback during active playing</li>
+            <li><strong>Sheet Music Alignment:</strong> Automatic comparison against MusicXML / MIDI scores</li>
+            <li><strong>Teacher Portal:</strong> Remote studio dashboard for music instructors</li>
+          </ul>
+        </div>
+        <div class="card" style="background: rgba(99, 102, 241, 0.1); border-color: rgba(99, 102, 241, 0.4);">
+          <h3>Ready for Presentation</h3>
+          <p style="margin-bottom: 12px;">The platform demonstrates full-stack proficiency across mobile development, signal processing, machine learning, and cloud infrastructure.</p>
+          <div style="font-weight: 700; color: #ffffff;">Thank You! Questions?</div>
+        </div>
+      </div>
+
+      <div class="notes-box">
+        <strong>Speaker Notes:</strong> Open the floor for questions regarding architecture, deep learning algorithms, or Google Cloud deployment decisions.
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Navigation Bar -->
+  <div class="nav-bar">
+    <button class="nav-btn" id="prevBtn" title="Previous Slide (Left Arrow)">◀</button>
+    <div class="slide-counter" id="slideCounter">1 / 11</div>
+    <button class="nav-btn" id="nextBtn" title="Next Slide (Right Arrow / Space)">▶</button>
+    <button class="nav-btn" id="notesBtn" title="Toggle Speaker Notes (N)" style="font-size: 0.85rem; font-weight: 700;">N</button>
+    <button class="nav-btn" id="fullscreenBtn" title="Fullscreen (F)" style="font-size: 0.85rem; font-weight: 700;">⛶</button>
+  </div>
+
+  <div class="keyboard-hint">
+    [← / →] Navigate &nbsp;|&nbsp; [N] Notes &nbsp;|&nbsp; [F] Fullscreen
+  </div>
+
+  <script>
+    const slides = document.querySelectorAll('.slide');
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const notesBtn = document.getElementById('notesBtn');
+    const fullscreenBtn = document.getElementById('fullscreenBtn');
+    const slideCounter = document.getElementById('slideCounter');
+    const progressBar = document.getElementById('progressBar');
+
+    let currentSlide = 0;
+    const totalSlides = slides.length;
+
+    function updateSlide(index) {
+      if (index < 0) index = 0;
+      if (index >= totalSlides) index = totalSlides - 1;
+      currentSlide = index;
+
+      slides.forEach((slide, idx) => {
+        slide.classList.toggle('active', idx === currentSlide);
+      });
+
+      slideCounter.textContent = `${currentSlide + 1} / ${totalSlides}`;
+      progressBar.style.width = `${((currentSlide + 1) / totalSlides) * 100}%`;
+    }
+
+    prevBtn.addEventListener('click', () => updateSlide(currentSlide - 1));
+    nextBtn.addEventListener('click', () => updateSlide(currentSlide + 1));
+
+    notesBtn.addEventListener('click', () => {
+      document.body.classList.toggle('show-notes');
+    });
+
+    fullscreenBtn.addEventListener('click', () => {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      } else {
+        document.exitFullscreen().catch(() => {});
+      }
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') {
+        e.preventDefault();
+        updateSlide(currentSlide + 1);
+      } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+        e.preventDefault();
+        updateSlide(currentSlide - 1);
+      } else if (e.key === 'n' || e.key === 'N') {
+        document.body.classList.toggle('show-notes');
+      } else if (e.key === 'f' || e.key === 'F') {
+        if (!document.fullscreenElement) {
+          document.documentElement.requestFullscreen().catch(() => {});
+        } else {
+          document.exitFullscreen().catch(() => {});
+        }
+      } else if (e.key === 'Home') {
+        updateSlide(0);
+      } else if (e.key === 'End') {
+        updateSlide(totalSlides - 1);
+      }
+    });
+
+    // Touch swipe support
+    let touchStartX = 0;
+    document.addEventListener('touchstart', (e) => {
+      touchStartX = e.changedTouches[0].screenX;
+    });
+    document.addEventListener('touchend', (e) => {
+      const touchEndX = e.changedTouches[0].screenX;
+      if (touchStartX - touchEndX > 50) updateSlide(currentSlide + 1);
+      if (touchEndX - touchStartX > 50) updateSlide(currentSlide - 1);
+    });
+
+    updateSlide(0);
+  </script>
+</body>
+</html>

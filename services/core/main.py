@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, date
 from collections import defaultdict
 import os
 import requests
+import uuid
 from typing import Optional, List
 from fastapi import FastAPI, Depends, status, HTTPException, UploadFile, File, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -53,8 +54,10 @@ app.add_middleware(
 )
 
 # ── Config ────────────────────────────────────────────────────────────────────
-PROJECT_ID    = os.getenv("PROJECT_ID",    "practice-tracker-2026-10")
-UPLOADS_BUCKET = os.getenv("UPLOADS_BUCKET", f"{PROJECT_ID}-uploads")
+PROJECT_ID      = os.getenv("PROJECT_ID",      "practice-tracker-2026-10")
+UPLOADS_BUCKET  = os.getenv("UPLOADS_BUCKET",  f"{PROJECT_ID}-uploads")
+WORKER_POLY_URL = os.getenv("WORKER_POLY_URL", "http://worker-poly:8080")
+WORKER_MONO_URL = os.getenv("WORKER_MONO_URL", "http://worker-mono:8080")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
@@ -270,7 +273,7 @@ async def analyze_direct(
         clean_name = os.path.splitext(raw_filename)[0].replace("_", " ").replace("-", " ").strip()
         title = clean_name.title() if clean_name else "Recording"
 
-    folder_type = mode.lower() if mode else ("poly" if inst.lower() in ["piano", "guitar"] else "mono")
+    folder_type = "poly" if (mode and "poly" in mode.lower()) or (not mode and inst.lower() in ["piano", "guitar"]) else "mono"
 
     # 1. Create PracticeSession
     new_session = PracticeSession(
@@ -291,8 +294,8 @@ async def analyze_direct(
     # 2. Read audio content
     file_bytes = await file.read()
 
-    # 3. Choose worker URL (internal docker network)
-    worker_host = "http://worker-poly:8080" if folder_type == "poly" else "http://worker-mono:8080"
+    # 3. Choose worker URL (internal docker network or Cloud Run URL)
+    worker_host = WORKER_POLY_URL if folder_type == "poly" else WORKER_MONO_URL
 
     metrics = None
     try:
@@ -317,6 +320,7 @@ async def analyze_direct(
         print(f"Worker invocation error: {e}")
 
     # 4. Check if AnalysisResult was saved (either by worker callback or direct response)
+    db.expire_all()
     existing_result = db.query(AnalysisResult).filter(AnalysisResult.session_id == new_session.id).first()
 
     if not existing_result and metrics:
@@ -339,8 +343,9 @@ async def analyze_direct(
         )
         db.add(existing_result)
         db.commit()
-        db.refresh(existing_result)
 
+    db.expire_all()
+    new_session = db.query(PracticeSession).filter(PracticeSession.id == new_session.id).first()
     new_session.status = "completed"
     db.commit()
     db.refresh(new_session)
@@ -432,17 +437,21 @@ def _serialize_session(session: PracticeSession) -> dict:
     }
 
 
+def _find_session_by_id(db: Session, session_id: str) -> Optional[PracticeSession]:
+    try:
+        uuid_obj = uuid.UUID(str(session_id))
+        return db.query(PracticeSession).filter(PracticeSession.id == uuid_obj).first()
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
 @app.get("/sessions/{session_id}")
 def get_session(
     session_id:   str,
     current_user: User    = Depends(get_user_optional),
     db:           Session = Depends(get_db),
 ):
-    session = (
-        db.query(PracticeSession)
-        .filter(PracticeSession.id == session_id)
-        .first()
-    )
+    session = _find_session_by_id(db, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     return _serialize_session(session)
@@ -481,7 +490,7 @@ def update_session_status(
     if body.status not in allowed:
         raise HTTPException(status_code=400, detail=f"status must be one of {allowed}")
 
-    session = db.query(PracticeSession).filter(PracticeSession.id == session_id).first()
+    session = _find_session_by_id(db, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -503,7 +512,7 @@ def save_analysis_results(
     No auth required; protected by Cloud Run ingress (internal traffic only).
     Idempotent: if a result already exists, update it.
     """
-    session = db.query(PracticeSession).filter(PracticeSession.id == session_id).first()
+    session = _find_session_by_id(db, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
