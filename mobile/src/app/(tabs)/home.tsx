@@ -63,11 +63,18 @@ const WEEK_DAYS = [
 export default function HomeScreen() {
   const theme  = useTheme();
   const insets = useSafeAreaInsets();
-  const { user, token } = useAuthStore();
+  const { user, token, logout } = useAuthStore();
 
   const [sessions,   setSessions]   = useState<any[]>(DEFAULT_SESSIONS);
   const [progress,   setProgress]   = useState<ProgressData | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [currentTime, setCurrentTime] = useState(() => new Date());
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (!token) router.replace('/(auth)' as any);
@@ -98,15 +105,23 @@ export default function HomeScreen() {
 
   const userName = user?.full_name?.split(' ')[0] ?? 'Maya';
   const initial = userName.charAt(0).toUpperCase();
+  const hour = currentTime.getHours();
+  const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
 
   // Current date formatting: "Saturday, 24 October"
   const todayStr = new Intl.DateTimeFormat('en-GB', {
     weekday: 'long',
     day: 'numeric',
     month: 'long',
-  }).format(new Date());
+  }).format(currentTime);
 
   const streakDays = progress?.streak_days ?? 12;
+
+  function handleLogout() {
+    setProfileMenuOpen(false);
+    logout();
+    router.replace('/(auth)' as any);
+  }
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
@@ -125,11 +140,17 @@ export default function HomeScreen() {
         <View style={styles.header}>
           <View>
             <Text style={styles.dateText}>{todayStr}</Text>
-            <Text style={styles.greetingText}>Good morning, {userName}</Text>
+            <Text style={styles.greetingText}>{greeting}, {userName}</Text>
           </View>
-          <View style={styles.avatar}>
+          <Pressable
+            onPress={() => setProfileMenuOpen((open) => !open)}
+            accessibilityRole="button"
+            accessibilityLabel="Open profile menu"
+            accessibilityState={{ expanded: profileMenuOpen }}
+            style={styles.avatar}
+          >
             <Text style={styles.avatarText}>{initial}</Text>
-          </View>
+          </Pressable>
         </View>
 
         {/* Streak & Daily Goal Card */}
@@ -255,6 +276,33 @@ export default function HomeScreen() {
           </View>
         </View>
       </ScrollView>
+
+      {profileMenuOpen && (
+        <>
+          <Pressable
+            onPress={() => setProfileMenuOpen(false)}
+            accessibilityRole="button"
+            accessibilityLabel="Close profile menu"
+            style={styles.profileMenuDismissArea}
+          />
+          <View style={[styles.profileMenu, { top: insets.top + 58 }]}>
+            <Text style={styles.profileName} numberOfLines={1}>
+              {user?.full_name ?? userName}
+            </Text>
+            {user?.email ? (
+              <Text style={styles.profileEmail} numberOfLines={1}>{user.email}</Text>
+            ) : null}
+            <View style={styles.profileMenuDivider} />
+            <Pressable
+              onPress={handleLogout}
+              accessibilityRole="button"
+              style={({ pressed }) => [styles.profileMenuAction, pressed && styles.profileMenuActionPressed]}
+            >
+              <Text style={styles.profileMenuActionText}>Log out</Text>
+            </Pressable>
+          </View>
+        </>
+      )}
     </View>
   );
 }
@@ -301,6 +349,62 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.heading,
     fontWeight: '700',
     color: '#4F46E5',
+  },
+  profileMenuDismissArea: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 10,
+  },
+  profileMenu: {
+    position: 'absolute',
+    right: 20,
+    zIndex: 11,
+    elevation: 8,
+    width: 260,
+    padding: 14,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 12,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+  },
+  profileName: {
+    fontSize: 14,
+    fontFamily: Fonts.heading,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  profileEmail: {
+    marginTop: 3,
+    fontSize: 12,
+    fontFamily: Fonts.body,
+    color: '#64748B',
+  },
+  profileMenuDivider: {
+    height: 1,
+    marginVertical: 10,
+    backgroundColor: '#E2E8F0',
+  },
+  profileMenuAction: {
+    minHeight: 40,
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+    borderRadius: 6,
+  },
+  profileMenuActionPressed: {
+    backgroundColor: '#F1F5F9',
+  },
+  profileMenuActionText: {
+    fontSize: 14,
+    fontFamily: Fonts.body,
+    fontWeight: '600',
+    color: '#B42318',
   },
   streakCard: {
     backgroundColor: '#FFFFFF',

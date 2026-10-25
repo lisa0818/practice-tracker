@@ -14,7 +14,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from google.cloud import storage
 from jose import JWTError, jwt
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import cast, Date, func
+from sqlalchemy import cast, Date, func, text
 from sqlalchemy.orm import Session
 
 from app.auth import (
@@ -27,9 +27,20 @@ from app.auth import (
 )
 from app.database import Base, engine, get_db
 from app.models import AnalysisResult, PracticeSession, User
+from app.pieces import (
+    MELODY_MATCH_THRESHOLD,
+    build_piece,
+    melody_signature,
+    melody_similarity,
+    title_key,
+)
 
 # Auto-create missing database tables on boot
 Base.metadata.create_all(bind=engine)
+
+# create_all doesn't add columns to tables that already exist
+with engine.begin() as _conn:
+    _conn.execute(text("ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS piece_key VARCHAR(250)"))
 
 app = FastAPI(title="Music Practice Tracker — Core API v2")
 
@@ -333,8 +344,50 @@ async def analyze_direct(
     new_session.status = "completed"
     db.commit()
     db.refresh(new_session)
+    _assign_piece_key(db, new_session)
 
     return _serialize_session(new_session)
+
+
+def _session_piece_key(s: PracticeSession) -> str:
+    """Stored key, or the title-based one for sessions saved before keys existed."""
+    return s.piece_key or title_key(s.title, s.instrument)
+
+
+def _assign_piece_key(db: Session, session: PracticeSession) -> None:
+    """
+    Decide which piece this upload belongs to, so repeat attempts are tracked
+    together. Same title + instrument → same piece. Otherwise, a recording
+    whose melody matches an earlier one is treated as the same piece too
+    (e.g. the file was renamed).
+    """
+    key = title_key(session.title, session.instrument)
+
+    prior = (
+        db.query(PracticeSession)
+        .filter(
+            PracticeSession.user_id == session.user_id,
+            PracticeSession.id != session.id,
+            PracticeSession.created_at < session.created_at,   # only earlier attempts
+            func.lower(PracticeSession.instrument) == (session.instrument or "").lower(),
+        )
+        .all()
+    )
+    prior = [p for p in prior if p.result]
+    prior_keys = {_session_piece_key(p) for p in prior}
+
+    if key not in prior_keys and session.result:
+        sig = melody_signature(session.result.note_events)
+        best_ratio, best_key = 0.0, None
+        for p in prior:   # best match across every earlier take of every piece
+            ratio = melody_similarity(sig, melody_signature(p.result.note_events))
+            if ratio > best_ratio:
+                best_ratio, best_key = ratio, _session_piece_key(p)
+        if best_key and best_ratio >= MELODY_MATCH_THRESHOLD:
+            key = best_key
+
+    session.piece_key = key
+    db.commit()
 
 
 def _serialize_session(session: PracticeSession) -> dict:
@@ -480,6 +533,8 @@ def save_analysis_results(
     session.status = "completed"
     db.commit()
     db.refresh(result)
+    db.refresh(session)
+    _assign_piece_key(db, session)
 
     return {"status": "success", "analysis_id": str(result.id)}
 
@@ -505,6 +560,11 @@ def get_progress(
         .all()
     )
 
+    # Sessions saved before piece keys existed: group them now (oldest first)
+    for s in reversed(sessions):
+        if s.result and not s.piece_key:
+            _assign_piece_key(db, s)
+
     serialized = [_serialize_session(s) for s in sessions]
 
     # Practice days
@@ -516,24 +576,14 @@ def get_progress(
     # Streak
     streak = _compute_streak(practice_days)
 
-    # Per-piece aggregation
+    # Per-piece history: every attempt at the same piece, oldest first
     pieces_map: dict[str, list] = defaultdict(list)
     for s in sessions:
         if s.result:
-            pieces_map[s.title].append(float(s.result.overall_score))
+            pieces_map[_session_piece_key(s)].append(s)
 
-    pieces = []
-    for title, scores in pieces_map.items():
-        latest = scores[0]
-        change = latest - scores[1] if len(scores) > 1 else 0
-        pieces.append({
-            "title":         title,
-            "latest_score":  latest,
-            "score_change":  change,
-            "session_count": len(scores),
-        })
-
-    pieces.sort(key=lambda p: p["latest_score"], reverse=True)
+    pieces = [build_piece(key, group) for key, group in pieces_map.items()]
+    pieces.sort(key=lambda p: p["last_practiced"] or "", reverse=True)
 
     return {
         "sessions":      serialized,

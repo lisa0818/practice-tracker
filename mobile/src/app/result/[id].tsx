@@ -69,9 +69,10 @@ export default function PitchResultScreen() {
   const title = rawTitle.charAt(0).toUpperCase() + rawTitle.slice(1);
   const instrument = params.instrument || session?.instrument || 'Piano';
 
-  // Real calculated note events
+  // Real calculated note events. Notes whose pitch couldn't be measured
+  // (cents_error null, e.g. a note buried in a chord) are left out.
   const notes = session?.result?.note_events && session.result.note_events.length > 0
-    ? session.result.note_events.map((n, idx) => ({
+    ? session.result.note_events.filter((n) => n.cents_error != null).map((n, idx) => ({
         ...n,
         label: n.label || midiToName(n.midi),
         idx: idx + 1,

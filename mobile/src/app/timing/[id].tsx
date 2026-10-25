@@ -56,22 +56,27 @@ export default function TimingScreen() {
   const instrument = params.instrument || session?.instrument || 'Piano';
 
   // Real calculated beat notes from the model
-  const beatNotes = session?.result?.note_events && session.result.note_events.length > 0
-    ? session.result.note_events.filter((n) => n.onset_error_ms != null).map((n, i) => {
+  const timedEvents = session?.result?.note_events?.filter((n) => n.onset_error_ms != null) ?? [];
+  // The worker leaves timing out when it can't find a reliable pulse (busy or free rhythm)
+  const timingUnavailable = !!session?.result && timedEvents.length === 0;
+
+  const beatNotes = timedEvents.length > 0
+    ? timedEvents.map((n, i) => {
         const name = n.label || midiToName(n.midi) || `N${i + 1}`;
         const ms = Math.round(n.onset_error_ms ?? 0);
-        const onBeat = n.early_late === 'onBeat' || Math.abs(ms) <= 25;
-        return { name, ms, onBeat };
+        return { name, ms, onBeat: n.early_late === 'onBeat' };
       })
-    : DEFAULT_BEAT_NOTES;
+    : timingUnavailable ? [] : DEFAULT_BEAT_NOTES;
 
   const onBeatCount = beatNotes.filter((b) => b.onBeat).length;
   const avgOffset = session?.result?.avg_onset_ms != null
     ? `${session.result.avg_onset_ms > 0 ? '+' : ''}${Math.round(session.result.avg_onset_ms)} ms`
     : '+12 ms';
-  const steadiness = session?.result?.steadiness != null
-    ? `±${Math.round(session.result.steadiness)} ms`
-    : '±27 ms';
+  // Spread of the onset errors, in ms (the stored steadiness value is a 0-100 score)
+  const errMs = beatNotes.map((b) => b.ms);
+  const meanMs = errMs.reduce((a, b) => a + b, 0) / Math.max(1, errMs.length);
+  const stdMs = Math.sqrt(errMs.reduce((a, b) => a + (b - meanMs) ** 2, 0) / Math.max(1, errMs.length));
+  const steadiness = errMs.length > 0 ? `±${Math.round(stdMs)} ms` : '±27 ms';
   const tip = session?.result?.practice_tip ?? 'Focus on keeping a steady pulse with a metronome to minimize early and late onsets.';
 
   return (
@@ -93,7 +98,17 @@ export default function TimingScreen() {
         <Text style={styles.title}>Timing</Text>
         <Text style={styles.subtitle}>{title} · {instrument}</Text>
 
+        {timingUnavailable && (
+          <View style={styles.tipCard}>
+            <Text style={styles.tipIcon}>ℹ️</Text>
+            <Text style={styles.tipText}>
+              Timing couldn't be judged reliably for this recording. {tip}
+            </Text>
+          </View>
+        )}
+
         {/* 3 Top Stat Tiles */}
+        {!timingUnavailable && (<>
         <View style={styles.statsRow}>
           <View style={styles.statTile}>
             <Text style={styles.statLabel}>Average offset</Text>
@@ -224,6 +239,7 @@ export default function TimingScreen() {
           <Text style={styles.tipIcon}>💡</Text>
           <Text style={styles.tipText}>{tip}</Text>
         </View>
+        </>)}
       </ScrollView>
 
       {/* Bottom Action Buttons */}

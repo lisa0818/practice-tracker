@@ -172,16 +172,46 @@ export async function listSessions(): Promise<SessionSummary[]> {
   return data;
 }
 
+/** One upload of a piece, with the scores it earned. */
+export interface PieceAttempt {
+  session_id:        string;
+  created_at:        string | null;
+  overall_score:     number | null;
+  pitch_score:       number | null;
+  timing_score:      number | null;
+  in_tune_pct:       number | null;
+  notes_on_beat_pct: number | null;
+  avg_cents_error:   number | null;
+  steadiness:        number | null;
+  practice_tip:      string | null;
+}
+
+export interface PieceSummary {
+  headline: string;
+  tone:     'up' | 'down' | 'flat';
+  bullets:  string[];
+}
+
+/** Every attempt at one piece (same title + instrument, or same melody), oldest first. */
+export interface PieceProgress {
+  piece_key:      string;
+  title:          string;
+  instrument:     string | null;
+  session_count:  number;
+  latest_score:   number | null;
+  score_change:   number | null;
+  first_score:    number | null;
+  best_score:     number | null;
+  last_practiced: string | null;
+  attempts:       PieceAttempt[];
+  summary:        PieceSummary;
+}
+
 export interface ProgressData {
   sessions:      SessionSummary[];
   streak_days:   number;
   practice_days: string[];   // ISO date strings e.g. "2026-10-01"
-  pieces: {
-    title:        string;
-    latest_score: number;
-    score_change: number;
-    session_count: number;
-  }[];
+  pieces:        PieceProgress[];   // most recently practised first
 }
 
 export async function getProgress(): Promise<ProgressData> {
