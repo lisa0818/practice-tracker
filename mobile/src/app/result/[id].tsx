@@ -114,7 +114,6 @@ export default function PitchResultScreen() {
       >
         {/* Title & Metadata matching uploaded audio */}
         <Text style={styles.title}>{title}</Text>
-        <Text style={styles.subtitle}>{instrument} · today · 0:48</Text>
 
         {/* Score Card */}
         <View style={styles.scoreCard}>
@@ -177,9 +176,9 @@ export default function PitchResultScreen() {
 
           {/* Per-note tuning chart: one fixed-width column per note, scrolls horizontally */}
           <View style={styles.graphWrapper}>
-            <Svg width={Y_AXIS_W} height={CHART_H}>
+            <Svg width={Y_AXIS_W} height={CHART_H} style={{ flexShrink: 0 }}>
               {[50, IN_TUNE_CENTS, 0, -IN_TUNE_CENTS, -50].map((c) => (
-                <SvgText
+                <SvgText fontFamily={Fonts.mono}
                   key={c}
                   x={Y_AXIS_W - 4}
                   y={centsToY(c) + 3}
@@ -227,7 +226,7 @@ export default function PitchResultScreen() {
                         rx={3}
                         fill={color}
                       />
-                      <SvgText
+                      <SvgText fontFamily={Fonts.mono}
                         x={cx}
                         y={labelY}
                         textAnchor="middle"
@@ -237,10 +236,10 @@ export default function PitchResultScreen() {
                       >
                         {sign}{Math.round(cents)}¢
                       </SvgText>
-                      <SvgText x={cx} y={CHART_H - 16} textAnchor="middle" fontSize={10} fontWeight="700" fill="#0F172A">
+                      <SvgText fontFamily={Fonts.mono} x={cx} y={CHART_H - 16} textAnchor="middle" fontSize={10} fontWeight="700" fill="#0F172A">
                         {n.label || midiToName(n.midi)}
                       </SvgText>
-                      <SvgText x={cx} y={CHART_H - 4} textAnchor="middle" fontSize={8} fill="#94A3B8">
+                      <SvgText fontFamily={Fonts.mono} x={cx} y={CHART_H - 4} textAnchor="middle" fontSize={8} fill="#94A3B8">
                         {i + 1}
                       </SvgText>
                     </React.Fragment>

@@ -2,7 +2,7 @@
  * Home screen — matching screenshot '2 · Home' exactly.
  */
 
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Pressable,
@@ -18,54 +18,13 @@ import Svg, { Path, Rect } from 'react-native-svg';
 import { Fonts, FontSize } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuthStore } from '@/stores/authStore';
-import { listSessions, getProgress, type SessionSummary, type ProgressData } from '@/services/api';
-
-const DEFAULT_SESSIONS = [
-  {
-    session_id: 'minuet-g',
-    title: 'Minuet in G',
-    instrument: 'Violin',
-    time_label: 'Today',
-    delta: '+4',
-    delta_type: 'up' as const,
-    score: 86,
-  },
-  {
-    session_id: 'c-major-scale',
-    title: 'C major scale',
-    instrument: 'Violin',
-    time_label: 'Yesterday',
-    delta: '+2',
-    delta_type: 'up' as const,
-    score: 79,
-  },
-  {
-    session_id: 'long-tones',
-    title: 'Long tones',
-    instrument: 'Violin',
-    time_label: 'Thursday',
-    delta: '-3',
-    delta_type: 'down' as const,
-    score: 74,
-  },
-];
-
-const WEEK_DAYS = [
-  { day: 'Mon', status: 'done' },
-  { day: 'Tue', status: 'done' },
-  { day: 'Wed', status: 'done' },
-  { day: 'Thu', status: 'done' },
-  { day: 'Fri', status: 'done' },
-  { day: 'Sat', status: 'today' },
-  { day: 'Sun', status: 'future' },
-];
+import { getProgress, type ProgressData } from '@/services/api';
 
 export default function HomeScreen() {
   const theme  = useTheme();
   const insets = useSafeAreaInsets();
   const { user, token, logout } = useAuthStore();
 
-  const [sessions,   setSessions]   = useState<any[]>(DEFAULT_SESSIONS);
   const [progress,   setProgress]   = useState<ProgressData | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [currentTime, setCurrentTime] = useState(() => new Date());
@@ -82,26 +41,23 @@ export default function HomeScreen() {
 
   const loadData = useCallback(async () => {
     try {
-      const [backendSessions, backendProgress] = await Promise.all([
-        listSessions(),
-        getProgress(),
-      ]);
-      if (backendSessions && backendSessions.length > 0) {
-        setSessions(backendSessions);
-      }
+      const backendProgress = await getProgress().catch(() => null);
       if (backendProgress) {
         setProgress(backendProgress);
       }
-    } catch {
-      // Keep rich default state if backend is freshly seeded
     } finally {
       setRefreshing(false);
     }
   }, []);
 
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
+  // Reload whenever the tab is shown, so a just-uploaded take appears
+  useFocusEffect(useCallback(() => { loadData(); }, [loadData]));
+
+  // One row per piece (all its attempts live on the piece screen)
+  const pieces = (progress?.pieces ?? []).filter((p) => {
+    const t = (p.title || '').toLowerCase();
+    return p.latest_score != null && !t.includes('a440') && !t.includes('test audio');
+  });
 
   const userName = user?.full_name?.split(' ')[0] ?? 'Maya';
   const initial = userName.charAt(0).toUpperCase();
@@ -153,48 +109,6 @@ export default function HomeScreen() {
           </Pressable>
         </View>
 
-        {/* Streak & Daily Goal Card */}
-        <View style={styles.streakCard}>
-          <View style={styles.streakHeader}>
-            <Text style={styles.streakTitle}>{streakDays}-day streak</Text>
-            <Text style={styles.streakBest}>Best: 14</Text>
-          </View>
-
-          {/* 7 Days Indicators */}
-          <View style={styles.weekRow}>
-            {WEEK_DAYS.map((w) => (
-              <View key={w.day} style={styles.dayCol}>
-                <View
-                  style={[
-                    styles.dayCircle,
-                    w.status === 'done' && styles.dayCircleDone,
-                    w.status === 'today' && styles.dayCircleToday,
-                    w.status === 'future' && styles.dayCircleFuture,
-                  ]}
-                >
-                  {w.status === 'done' && (
-                    <Text style={styles.checkMark}>✓</Text>
-                  )}
-                </View>
-                <Text style={styles.dayLabel}>{w.day}</Text>
-              </View>
-            ))}
-          </View>
-
-          <View style={styles.cardDivider} />
-
-          {/* Today's Goal */}
-          <View style={styles.goalSection}>
-            <View style={styles.goalTextRow}>
-              <Text style={styles.goalLabel}>Today's goal</Text>
-              <Text style={styles.goalValue}>14 / 20 min</Text>
-            </View>
-            <View style={styles.progressBarTrack}>
-              <View style={[styles.progressBarFill, { width: '70%' }]} />
-            </View>
-          </View>
-        </View>
-
         {/* Upload a Recording Button */}
         <Pressable
           onPress={() => router.push('/upload' as any)}
@@ -218,62 +132,64 @@ export default function HomeScreen() {
           <Text style={styles.uploadBtnText}>Upload a recording</Text>
         </Pressable>
 
-        {/* Suggested Next Card */}
-        <Pressable
-          onPress={() => router.push('/upload' as any)}
-          style={({ pressed }) => [styles.suggestedCard, pressed && styles.pressed]}
-        >
-          <View style={styles.suggestedIconWrap}>
-            <Text style={{ fontSize: 16 }}>📋</Text>
-          </View>
-          <View style={styles.suggestedTextCol}>
-            <Text style={styles.suggestedLabel}>Suggested next</Text>
-            <Text style={styles.suggestedTitle}>C major scale at 60 BPM</Text>
-          </View>
-          <Text style={styles.chevron}>›</Text>
-        </Pressable>
-
-        {/* Recent Sessions */}
+        {/* Pieces: one row per piece, tap for every attempt */}
         <View style={styles.recentSection}>
           <View style={styles.recentHeader}>
-            <Text style={styles.recentTitle}>Recent sessions</Text>
+            <Text style={styles.recentTitle}>Your pieces</Text>
             <Pressable onPress={() => router.push('/(tabs)/progress' as any)}>
               <Text style={styles.seeAllText}>See all</Text>
             </Pressable>
           </View>
 
-          <View style={styles.sessionsList}>
-            {sessions.map((item, idx) => {
-              const score = item.overall_score ?? item.score ?? 80;
-              const title = item.title;
-              const instrument = item.instrument ?? 'Violin';
-              const timeLabel = item.time_label ?? (item.created_at ? new Date(item.created_at).toLocaleDateString() : 'Today');
-              const delta = item.delta ?? (idx === 0 ? '+4' : idx === 1 ? '+2' : '-3');
-              const isUp = !String(delta).startsWith('-');
+          {pieces.length === 0 ? (
+            <View style={styles.emptySessionsCard}>
+              <Text style={styles.emptySessionsTitle}>No pieces yet</Text>
+              <Text style={styles.emptySessionsSub}>
+                Upload a recording above to analyze your performance and see your scores.
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.sessionsList}>
+              {pieces.slice(0, 10).map((piece) => {
+                const change =
+                  piece.first_score != null && piece.latest_score != null && piece.session_count > 1
+                    ? Math.round(piece.latest_score - piece.first_score)
+                    : null;
+                const isUp = (change ?? 0) >= 0;
+                const last = piece.last_practiced ? new Date(piece.last_practiced).toLocaleDateString() : '';
 
-              return (
-                <Pressable
-                  key={item.session_id ?? idx}
-                  onPress={() => router.push(`/result/${item.session_id ?? '1'}` as any)}
-                  style={({ pressed }) => [styles.sessionRow, pressed && styles.pressed]}
-                >
-                  <View style={styles.sessionLeft}>
-                    <Text style={styles.sessionPieceName}>{title}</Text>
-                    <Text style={styles.sessionMeta}>{instrument} · {timeLabel}</Text>
-                  </View>
-
-                  <View style={styles.sessionRight}>
-                    <View style={styles.deltaBox}>
-                      <Text style={[styles.deltaText, { color: isUp ? '#0D9488' : '#EA580C' }]}>
-                        {isUp ? `↑ ${delta.replace('+', '')}` : `↓ ${delta.replace('-', '')}`}
+                return (
+                  <Pressable
+                    key={piece.piece_key}
+                    onPress={() => router.push(`/piece/${encodeURIComponent(piece.piece_key)}` as any)}
+                    style={({ pressed }) => [styles.sessionRow, pressed && styles.pressed]}
+                  >
+                    <View style={styles.sessionLeft}>
+                      <Text style={styles.sessionPieceName}>{piece.title}</Text>
+                      <Text style={styles.sessionMeta}>
+                        {piece.instrument ?? ''} · {piece.session_count} {piece.session_count === 1 ? 'attempt' : 'attempts'}
+                        {last ? ` · ${last}` : ''}
                       </Text>
                     </View>
-                    <Text style={styles.sessionScore}>{Math.round(score)}</Text>
-                  </View>
-                </Pressable>
-              );
-            })}
-          </View>
+
+                    <View style={styles.sessionRight}>
+                      {change !== null && change !== 0 ? (
+                        <View style={styles.deltaBox}>
+                          <Text style={[styles.deltaText, { color: isUp ? '#0D9488' : '#EA580C' }]}>
+                            {isUp ? '↑' : '↓'} {Math.abs(change)}
+                          </Text>
+                        </View>
+                      ) : null}
+                      <Text style={styles.sessionScore}>
+                        {piece.latest_score != null ? Math.round(piece.latest_score) : '–'}
+                      </Text>
+                      <Text style={styles.rowChevron}>›</Text>
+                    </View>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
         </View>
       </ScrollView>
 
@@ -518,7 +434,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 14,
+    marginTop: 8,
+    marginBottom: 24,
     shadowColor: '#4F46E5',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.2,
@@ -591,6 +508,29 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#4F46E5',
   },
+  emptySessionsCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    padding: 24,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptySessionsTitle: {
+    fontSize: 15,
+    fontFamily: Fonts.heading,
+    fontWeight: '700',
+    color: '#0F172A',
+    marginBottom: 4,
+  },
+  emptySessionsSub: {
+    fontSize: 13,
+    fontFamily: Fonts.body,
+    color: '#94A3B8',
+    textAlign: 'center',
+    lineHeight: 18,
+  },
   sessionsList: {
     backgroundColor: '#FFFFFF',
     borderRadius: 16,
@@ -635,6 +575,11 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: Fonts.body,
     fontWeight: '600',
+  },
+  rowChevron: {
+    fontSize: 22,
+    color: '#CBD5E1',
+    marginLeft: 6,
   },
   sessionScore: {
     fontSize: 18,

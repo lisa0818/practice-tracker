@@ -42,6 +42,7 @@ class PracticeSession(Base):
     tuning_hz      = Column(Integer,     nullable=True, default=440)
     audio_gcs_path = Column(String(500), nullable=True)
     piece_key      = Column(String(250), nullable=True)   # groups attempts at the same piece
+    audio_file     = Column(String(500), nullable=True)   # stored recording, for playback
     status        = Column(String(20),  nullable=False, default="pending")
     created_at     = Column(DateTime(timezone=True), server_default=func.now())
 

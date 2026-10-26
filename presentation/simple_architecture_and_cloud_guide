@@ -1,0 +1,204 @@
+# Practice Tracker: Architecture & Cloud Guide (In Simple Words)
+
+This guide explains the entire **Practice Tracker** system, how every piece works, what we built in the cloud, why we need each piece, and how they talk to each other — using simple, everyday language and analogies.
+
+---
+
+## 1. The Big Picture: The Restaurant Analogy
+
+To understand how the system works without getting lost in technical terms, think of **Practice Tracker** like a high-end restaurant:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        THE PRACTICE TRACKER SYSTEM                     │
+├────────────────────┬──────────────────────────────────┬────────────────┤
+│  1. Mobile App     │  2. Cloud Run (The Kitchen)      │  3. Cloud SQL  │
+│  (The Customer)    │                                  │  (The Ledger)  │
+│                    │  • Core API: Head Waiter/Manager │                │
+│  You record your   │  • Worker-Poly: Piano/Chord Chef │  Permanent,    │
+│  music on your     │  • Worker-Mono: Solo Voice Chef  │  secure        │
+│  phone and order   │                                  │  database of   │
+│  an analysis       │  Listens to the audio, figures   │  users, scores │
+│                    │  out the notes, scores pitch &   │  and practice  │
+│                    │  timing                          │  history       │
+└────────────────────┴──────────────────────────────────┴────────────────┘
+```
+
+1. **The Mobile App (The Customer)**: You record your violin, voice, or piano on your phone. You tap "Analyze". You are placing an order for a musical critique.
+2. **The Core API (The Head Waiter / Manager)**: The waiter welcomes you, checks your table reservation (login/password), writes down your order in the book, and decides which chef should cook your meal.
+3. **The ML Workers (The Specialized Chefs)**:
+   - **Chef Poly (`worker-poly`)**: Specializes in complex multi-note feasts (Piano, Guitar, chords).
+   - **Chef Mono (`worker-mono`)**: Specializes in delicate single melodies (Voice, Violin, Flute).
+4. **Cloud SQL (The Secure Bookkeeper / Filing Cabinet)**: Keeps a permanent record of all users, every session you practiced, and your scores so you can see your progress over time.
+5. **Artifact Registry (The Blueprint Locker)**: Holds the exact software containers (recipes) so the cloud can launch copies of the servers whenever needed.
+
+---
+
+## 2. What We Created in Google Cloud & Why
+
+Here is the exact list of everything created in Google Cloud Platform (GCP), why it exists, and what would happen if we didn't have it:
+
+### 1. Google Cloud SQL (PostgreSQL 15)
+* **What is it?** A fully managed, industrial-strength database running in Google's secure data center.
+* **Why do we need it?** 
+  - To permanently store user accounts, passwords, practice sessions, note-by-note pitch errors, and timing scores.
+  - Before this, the project used a local SQLite file on your laptop. If your laptop was closed, or if multiple people used the app, the data would be lost or inaccessible.
+* **What happens without it?** As soon as you turn off your computer or deploy the app to other users, nobody can log in, and all practice history disappears.
+
+---
+
+### 2. Google Cloud Run: Core API (`core-api`)
+* **What is it?** A lightweight, serverless web server running our FastAPI application.
+* **Why do we need it?**
+  - It is the front door of the backend. It receives requests from the mobile app, manages logins, creates sessions in the database, and tells the AI workers what to do.
+  - It connects securely to Cloud SQL via a private internal connection (Unix domain socket).
+* **What happens without it?** The mobile app would have nothing to connect to over the internet.
+
+---
+
+### 3. Google Cloud Run: Polyphonic Worker (`worker-poly`)
+* **What is it?** A dedicated AI brain running **Spotify's Basic Pitch** neural network.
+* **Why do we need it?**
+  - When someone plays piano or guitar, multiple notes sound at the exact same second (chords). Normal pitch trackers get completely confused by chords.
+  - Basic Pitch can "hear" up to all 88 piano keys simultaneously, separating each note and figuring out whether each finger was on pitch.
+* **What happens without it?** Any piano or guitar practice session would fail or show scrambled, inaccurate notes.
+
+---
+
+### 4. Google Cloud Run: Monophonic Worker (`worker-mono`)
+* **What is it?** A high-precision AI brain running **CREPE** (Convolutional Representation for Pitch Estimation).
+* **Why do we need it?**
+  - Solo instruments (like Violin, Flute) and human singing don't play discrete rigid piano keys — they slide, add vibrato, and drift smoothly.
+  - CREPE tracks your exact pitch every 10 milliseconds, telling you if you were 8 cents sharp or 15 cents flat.
+* **What happens without it?** Singers and violinists wouldn't get accurate intonation feedback or vibrato tracking.
+
+---
+
+### 5. Google Artifact Registry (`practice-tracker-repo`)
+* **What is it?** A private cloud storage warehouse specifically built for Docker container images.
+* **Why do we need it?**
+  - Cloud Run cannot run raw python files directly from your desktop. We pack `core-api`, `worker-poly`, and `worker-mono` into standardized "Docker containers" (self-contained packages containing Python, libraries, and models).
+  - Artifact Registry stores these containers so Cloud Run can spin them up anywhere in seconds.
+* **What happens without it?** Cloud Run would have nowhere to download and deploy your software.
+
+---
+
+### 6. Google Cloud Storage (Bucket)
+* **What is it?** Unlimited, ultra-fast cloud file storage (like Google Drive or AWS S3, but built for programs).
+* **Why do we need it?**
+  - Audio files are large. Putting large audio files directly inside a database makes the database slow and bloated.
+  - Cloud Storage stores the actual `.wav` or `.mp3` recording, while the database just stores the score and note events.
+* **What happens without it?** Audio files would clutter your database and cause it to run out of memory.
+
+---
+
+## 3. How They All Connect With Each Other (The Wiring)
+
+Here is a visual map showing exactly how data travels between each component:
+
+```
+[ Your Phone (Expo App) ]
+         │
+         │ (1) Sends audio over public HTTPS (Internet)
+         ▼
+[ Cloud Run: core-api ] ──(2) Private Unix Socket──► [ Cloud SQL Database ]
+         │                                              (Stores session row)
+         │ (3) Streams raw audio internally
+         ▼
+ ┌────────────────────────────────────────┐
+ │ Which instrument is being played?      │
+ ├───────────────────┬────────────────────┤
+ │ Piano / Guitar?   │ Voice / Violin?    │
+ │ (Chords)          │ (Solo Line)        │
+ └─────────┬─────────┴──────────┬─────────┘
+           │                    │
+           ▼                    ▼
+[ Cloud Run: worker-poly ]   [ Cloud Run: worker-mono ]
+(Spotify Basic Pitch AI)     (CREPE Pitch AI)
+           │                    │
+           └──────────┬─────────┘
+                      │ (4) Returns calculated notes, cents error & timing
+                      ▼
+[ Cloud Run: core-api ]
+         │
+         │ (5) Saves scores & note events
+         ▼
+[ Cloud SQL Database ]
+         │
+         │ (6) Returns full result JSON to phone
+         ▼
+[ Your Phone (Expo App) ] ──► Draws Green/Amber/Red Piano Roll & Timing bars!
+```
+
+### The 3 Key Connection Secrets:
+1. **The Mobile App only ever talks to `core-api`**:
+   The phone never connects directly to the database or to the heavy AI workers. This protects your database password and keeps the phone app super fast and simple.
+2. **`core-api` talks to Cloud SQL via a Private Unix Socket**:
+   The database port is **not** open to the public internet. It communicates through a secure internal tunnel (`/cloudsql/practice-tracker-2026-10:asia-south1:practice-tracker-db`), making it immune to outside hackers.
+3. **All Cloud Services live in the same house (`asia-south1` Mumbai)**:
+   Because Cloud Run, Cloud SQL, and Artifact Registry are all located in Google's Mumbai data center, talking between them takes less than 5 milliseconds!
+
+---
+
+## 4. The Complete Story of a Single Recording (Step-by-Step)
+
+Let's follow what happens from the moment you tap "Analyze" on your phone:
+
+### Step 1: Capture on the Phone
+You select **Piano**, tempo **120 BPM**, play for 10 seconds, and tap **"Analyze"**. The Expo app packages your recorded sound into an audio file.
+
+### Step 2: The Handshake
+The phone sends the audio over HTTPS to:
+`https://core-api-571568987946.asia-south1.run.app/sessions/analyze-direct`
+It includes your user login token in the header so the server knows who you are.
+
+### Step 3: Registration in Cloud SQL
+`core-api` receives the file. Before doing any heavy math, it immediately creates a new line in the `practice_sessions` table in Cloud SQL:
+- `title`: "My Practice"
+- `instrument`: "Piano"
+- `status`: "processing"
+
+### Step 4: Smart Dispatching to the AI
+`core-api` sees you selected **Piano**. It knows the monophonic worker can't handle piano chords, so it forwards your audio directly to:
+`https://worker-poly-571568987946.asia-south1.run.app/analyze-file`
+
+### Step 5: The AI Does the Heavy Math
+The `worker-poly` container wakes up:
+1. It runs your sound waves through Spotify's **Basic Pitch** deep neural network.
+2. It detects each note (e.g. Note C4 started at 0.5s, ended at 1.2s).
+3. It measures the frequency against standard 440 Hz tuning to find your **cents error** (e.g. -2 cents flat).
+4. It compares when you struck each note against the 120 BPM metronome grid (e.g. "Note 1 was 12ms early, Note 2 was dead on").
+5. It compiles an overall **Pitch Score (94%)** and **Timing Score (88%)**.
+
+### Step 6: Saving the Master Copy
+The worker hands the results back to `core-api`. `core-api` writes the full report into the `analysis_results` table in Cloud SQL and updates the session status to `"completed"`.
+
+### Step 7: Visualizing on Your Screen
+`core-api` sends the results back to your phone. The React Native app takes the list of notes and instantly renders:
+- An interactive **Piano Roll** showing each note you played in Green (in-tune) or Red (out-of-tune).
+- A **Beat Timeline** showing whether your rhythm was steady or rushed.
+- Your updated overall progress streak.
+
+---
+
+## 5. Why Did We Use the Cloud? (Why Not Just Keep It on the Laptop or Phone?)
+
+| Problem Without Cloud | How Our Cloud Solution Solves It |
+| :--- | :--- |
+| **Phones are too weak for big AI models** | Running TensorFlow, Basic Pitch, and CREPE directly on a phone would make the phone burning hot, drain the battery in 20 minutes, and make the app download size over 600 MB. The cloud runs it on powerful multi-core server CPUs in 2 seconds. |
+| **Laptops sleep & change IP addresses** | If you run the server on your laptop, the moment you close your laptop lid or leave your Wi-Fi, the mobile app stops working. Cloud Run is awake 24/7/365 worldwide. |
+| **Expensive servers that run 24/7** | Traditional cloud servers (like AWS EC2 or Virtual Machines) bill you every single hour even when nobody is using them. **Cloud Run is serverless**: if nobody is practicing at 3 AM, it scales down to **zero** and costs **$0.00**. It only turns on when a musician uploads audio. |
+| **Data safety & backups** | If your laptop disk crashes, all your database history is gone. **Cloud SQL** is automatically backed up, replicated, and protected by Google's multi-tier storage redundancy. |
+
+---
+
+## 6. Quick Reference Table: All Deployed Resources
+
+| Component Name | Type | What It Does In 1 Sentence |
+| :--- | :--- | :--- |
+| **`practice-tracker-db`** | Cloud SQL (Postgres 15) | The permanent filing cabinet storing users, sessions, and scores. |
+| **`core-api`** | Cloud Run Service | The central coordinator handling auth, database queries, and routing. |
+| **`worker-poly`** | Cloud Run Service | The AI brain that translates chords, piano, and guitar into musical notes. |
+| **`worker-mono`** | Cloud Run Service | The AI brain that tracks pitch and vibrato for singers and violinists. |
+| **`practice-tracker-repo`** | Artifact Registry | The cloud warehouse holding the Docker container images for deployment. |
+| **`practice-tracker-2026-10-uploads`** | Cloud Storage | The storage vault holding original audio recordings. |

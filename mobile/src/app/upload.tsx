@@ -4,8 +4,8 @@
  */
 
 import * as DocumentPicker from 'expo-document-picker';
-import { router } from 'expo-router';
-import React, { useState } from 'react';
+import { router, useLocalSearchParams } from 'expo-router';
+import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -13,16 +13,23 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Rect } from 'react-native-svg';
+import Svg, { Path, Rect } from 'react-native-svg';
 
 import { Fonts, FontSize } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { analyzeDirectAudio, createSession, uploadToGCS } from '@/services/api';
+import {
+  analyzeDirectAudio,
+  createSession,
+  getProgress,
+  uploadToGCS,
+  type PieceProgress,
+} from '@/services/api';
 
-const INSTRUMENTS = ['Voice', 'Violin', 'Guitar', 'Piano'] as const;
+const INSTRUMENTS = ['Violin', 'Guitar', 'Piano'] as const;
 type Instrument = typeof INSTRUMENTS[number];
 
 function cleanAudioTitle(filename: string): string {
@@ -32,15 +39,66 @@ function cleanAudioTitle(filename: string): string {
     .trim();
 }
 
+/** Same idea as the backend's title normalisation, to catch duplicate piece names early. */
+function normalizeName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/\.(mp3|wav|m4a|aac|flac|ogg|webm)$/, '')
+    .replace(/[(\[]\s*\d+\s*[)\]]/g, ' ')
+    .replace(/\b(copy|(take|attempt|try|v)\s*\d+)\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+type PieceRef = Pick<PieceProgress, 'piece_key' | 'title' | 'instrument'>;
+
 export default function UploadScreen() {
   const insets = useSafeAreaInsets();
+  // Opened from a piece's "Add new take": the piece is fixed
+  const params = useLocalSearchParams<{ pieceKey?: string; pieceTitle?: string; instrument?: string }>();
+  const lockedPiece: PieceRef | null = params.pieceKey
+    ? { piece_key: params.pieceKey, title: params.pieceTitle ?? 'this piece', instrument: params.instrument || null }
+    : null;
 
-  const [instrument, setInstrument] = useState<Instrument>('Piano');
-  const [file,       setFile]       = useState<{ name: string; size: string; duration: string; uri?: string; fileObj?: any } | null>({
-    name: 'Eight_White_Keys.mp3',
-    size: '1.3 MB',
-    duration: '0:48',
-  });
+  const [pieces,      setPieces]      = useState<PieceProgress[] | null>(null);
+  const [choiceKey,   setChoiceKey]   = useState<string | null>(null);   // an existing piece
+  const [creatingNew, setCreatingNew] = useState(false);
+  const [newName,     setNewName]     = useState('');
+  const [newInstrument, setNewInstrument] = useState<Instrument>('Piano');
+
+  useEffect(() => {
+    if (lockedPiece) return;
+    getProgress()
+      .then((progressData) => {
+        // The backend already groups every attempt by piece; use its list as is
+        const list = (progressData.pieces ?? []).filter((p) => {
+          const t = (p.title || '').toLowerCase().trim();
+          return !!p.piece_key && !t.includes('a440') && !t.includes('test audio');
+        });
+        setPieces(list);
+        // Nothing preselected: adding a take to the wrong piece would skew its history
+        setChoiceKey(null);
+        setCreatingNew(list.length === 0);
+      })
+      .catch(() => {
+        setPieces([]);
+        setChoiceKey(null);
+        setCreatingNew(true);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const chosenPiece: PieceRef | null =
+    lockedPiece ?? pieces?.find((p) => p.piece_key === choiceKey) ?? null;
+  const instrument = ((chosenPiece?.instrument as Instrument | null) ?? newInstrument) as Instrument;
+
+  const duplicate = creatingNew && newName.trim() !== ''
+    ? pieces?.find(
+        (p) => normalizeName(p.title) === normalizeName(newName)
+          && (p.instrument ?? '').toLowerCase() === newInstrument.toLowerCase(),
+      ) ?? null
+    : null;
+  const [file,       setFile]       = useState<{ name: string; size: string; duration: string; uri?: string; fileObj?: any } | null>(null);
   const [loading,    setLoading]    = useState(false);
   const [error,      setError]      = useState('');
 
@@ -61,6 +119,8 @@ export default function UploadScreen() {
           uri: asset.uri,
           fileObj: (asset as any).file,
         });
+        // Suggest the file name as the piece name, which can still be edited
+        if (creatingNew && newName.trim() === '') setNewName(cleanAudioTitle(asset.name));
         setError('');
       }
     } catch {
@@ -74,10 +134,19 @@ export default function UploadScreen() {
       return;
     }
 
+    if (!chosenPiece && !(creatingNew && newName.trim())) {
+      setError('Choose which piece this is, or name a new one.');
+      return;
+    }
+    if (duplicate) {
+      setError(`You already have "${duplicate.title}" — pick it from the list instead of creating it again.`);
+      return;
+    }
+
     setLoading(true);
     setError('');
 
-    const cleanTitle = cleanAudioTitle(file.name);
+    const cleanTitle = chosenPiece ? chosenPiece.title : newName.trim();
     const mode = (instrument === 'Guitar' || instrument === 'Piano') ? 'poly' : 'mono';
 
     try {
@@ -100,6 +169,9 @@ export default function UploadScreen() {
       formData.append('title', cleanTitle);
       formData.append('instrument', instrument);
       formData.append('mode', mode);
+      // Attach the take to its piece explicitly, so the backend never has to guess from the title
+      if (chosenPiece) formData.append('piece_key', chosenPiece.piece_key);
+      else formData.append('new_piece', 'true');
 
       const session = await analyzeDirectAudio(formData);
 
@@ -175,28 +247,109 @@ export default function UploadScreen() {
           The models will detect your pitch, note starts, and timing accuracy directly from your audio.
         </Text>
 
-        {/* Instrument Selector */}
+        {/* Which piece is this a take of? */}
         <View style={styles.section}>
-          <Text style={styles.sectionHeader}>Instrument</Text>
-          <View style={styles.instrumentTabs}>
-            {INSTRUMENTS.map((inst) => {
-              const active = instrument === inst;
-              return (
-                <Pressable
-                  key={inst}
-                  onPress={() => setInstrument(inst)}
-                  style={[
-                    styles.instTab,
-                    active && styles.instTabActive,
-                  ]}
-                >
-                  <Text style={[styles.instTabText, active && styles.instTabTextActive]}>
-                    {inst}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
+          <Text style={styles.sectionHeader}>Piece</Text>
+
+          {lockedPiece ? (
+            <View style={styles.lockedPiece}>
+              <Text style={styles.pieceOptionTitle}>{lockedPiece.title}</Text>
+              <Text style={styles.pieceOptionSub}>
+                {lockedPiece.instrument ?? ''} · adding a new take to this piece
+              </Text>
+            </View>
+          ) : pieces === null ? (
+            <ActivityIndicator color="#4F46E5" />
+          ) : (
+            <>
+              {/* Existing piece, or start a new one */}
+              {pieces.length > 0 && (
+                <View style={styles.modeToggle}>
+                  <Pressable
+                    onPress={() => { setCreatingNew(false); setError(''); }}
+                    style={[styles.modeBtn, !creatingNew && styles.modeBtnActive]}
+                  >
+                    <Text style={[styles.modeText, !creatingNew && styles.modeTextActive]}>Existing piece</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => { setCreatingNew(true); setChoiceKey(null); setError(''); }}
+                    style={[styles.modeBtn, creatingNew && styles.modeBtnActive]}
+                  >
+                    <Text style={[styles.modeText, creatingNew && styles.modeTextActive]}>New piece</Text>
+                  </Pressable>
+                </View>
+              )}
+
+              {/* Existing: only the list of pieces you already have */}
+              {!creatingNew && pieces.length > 0 && (
+                <>
+                  <Text style={styles.pieceHelp}>Pick the piece this recording belongs to:</Text>
+                  <ScrollView style={styles.pieceList} nestedScrollEnabled showsVerticalScrollIndicator>
+                    {pieces.map((p) => {
+                      const active = choiceKey === p.piece_key;
+                      return (
+                        <Pressable
+                          key={p.piece_key}
+                          onPress={() => { setChoiceKey(p.piece_key); setError(''); }}
+                          style={[styles.pieceOption, active && styles.pieceOptionActive]}
+                        >
+                          <View style={[styles.radio, active && styles.radioActive]}>
+                            {active && <View style={styles.radioDot} />}
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.pieceOptionTitle} numberOfLines={1}>{p.title}</Text>
+                            <Text style={styles.pieceOptionSub}>
+                              {p.instrument ?? ''} · {p.session_count} {p.session_count === 1 ? 'attempt' : 'attempts'}
+                            </Text>
+                          </View>
+                        </Pressable>
+                      );
+                    })}
+                  </ScrollView>
+                </>
+              )}
+
+              {/* New: just the name (plus the instrument, which the analysis needs) */}
+              {creatingNew && (
+                <>
+                  <Text style={styles.pieceHelp}>Name of the new piece:</Text>
+                  <TextInput
+                    value={newName}
+                    onChangeText={(t) => { setNewName(t); setError(''); }}
+                    placeholder="e.g. Happy Birthday"
+                    placeholderTextColor="#94A3B8"
+                    style={styles.nameInput}
+                    autoCapitalize="words"
+                  />
+                  {duplicate && (
+                    <Pressable
+                      onPress={() => { setCreatingNew(false); setChoiceKey(duplicate.piece_key); setError(''); }}
+                    >
+                      <Text style={styles.dupText}>
+                        You already have "{duplicate.title}" for {duplicate.instrument}. Tap here to add this recording to it instead.
+                      </Text>
+                    </Pressable>
+                  )}
+
+                  <Text style={[styles.pieceHelp, { marginTop: 16 }]}>Instrument:</Text>
+                  <View style={styles.instrumentTabs}>
+                    {INSTRUMENTS.map((inst) => {
+                      const active = newInstrument === inst;
+                      return (
+                        <Pressable
+                          key={inst}
+                          onPress={() => setNewInstrument(inst)}
+                          style={[styles.instTab, active && styles.instTabActive]}
+                        >
+                          <Text style={[styles.instTabText, active && styles.instTabTextActive]}>{inst}</Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </>
+              )}
+            </>
+          )}
         </View>
 
         {/* Your Recording Card */}
@@ -204,16 +357,37 @@ export default function UploadScreen() {
           <Text style={styles.sectionHeader}>Your recording</Text>
           <View style={styles.fileCard}>
             <View style={styles.fileCardTop}>
-              <View style={styles.fileIconWrap}>
-                <Text style={{ fontSize: 16 }}>🎵</Text>
-              </View>
-              <View style={styles.fileMeta}>
-                <Text style={styles.fileName} numberOfLines={1}>{file?.name ?? 'Eight_White_Keys.mp3'}</Text>
-                <Text style={styles.fileSub}>{file?.duration ?? '0:48'} · {file?.size ?? '1.3 MB'}</Text>
-              </View>
-              <Pressable onPress={handlePickFile} hitSlop={8}>
-                <Text style={styles.replaceText}>Replace</Text>
+              <Pressable
+                onPress={handlePickFile}
+                hitSlop={8}
+                style={({ pressed }) => [styles.uploadHereBtn, pressed && styles.pressed]}
+              >
+                <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" style={{ marginRight: 6 }}>
+                  <Path
+                    d="M12 3v12m0-12l-4 4m4-4l4 4"
+                    stroke="#FFFFFF"
+                    strokeWidth={2.4}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <Path
+                    d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
+                    stroke="#FFFFFF"
+                    strokeWidth={2.4}
+                    strokeLinecap="round"
+                  />
+                </Svg>
+                <Text style={styles.uploadHereText}>Upload here</Text>
               </Pressable>
+
+              <View style={styles.fileMeta}>
+                <Text style={styles.fileName} numberOfLines={1}>
+                  {file?.name ?? 'No audio file chosen'}
+                </Text>
+                {!file && (
+                  <Text style={styles.fileSub}>Tap "Upload here" to choose audio</Text>
+                )}
+              </View>
             </View>
 
             {/* Audio Waveform */}
@@ -231,7 +405,7 @@ export default function UploadScreen() {
                     height={height}
                     rx={1.75}
                     fill="#4F46E5"
-                    opacity={i < 20 ? 0.9 : 0.4}
+                    opacity={file ? (i < 20 ? 0.9 : 0.4) : 0.18}
                   />
                 ))}
               </Svg>
@@ -325,6 +499,116 @@ const styles = StyleSheet.create({
     color: '#0F172A',
     marginBottom: 10,
   },
+  modeToggle: {
+    flexDirection: 'row',
+    backgroundColor: '#EEF2FF',
+    borderRadius: 12,
+    padding: 3,
+    marginBottom: 12,
+  },
+  modeBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  modeBtnActive: {
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  modeText: {
+    fontSize: 13,
+    fontFamily: Fonts.body,
+    fontWeight: '600',
+    color: '#64748B',
+  },
+  modeTextActive: {
+    color: '#4F46E5',
+    fontWeight: '700',
+  },
+  pieceHelp: {
+    fontSize: 12,
+    fontFamily: Fonts.body,
+    color: '#64748B',
+    marginBottom: 8,
+  },
+  pieceList: {
+    maxHeight: 320,
+  },
+  lockedPiece: {
+    backgroundColor: '#EEF2FF',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#C7D2FE',
+    padding: 14,
+  },
+  pieceOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 8,
+  },
+  pieceOptionActive: {
+    borderColor: '#4F46E5',
+    backgroundColor: '#EEF2FF',
+  },
+  pieceOptionTitle: {
+    fontSize: 14,
+    fontFamily: Fonts.heading,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  pieceOptionSub: {
+    fontSize: 12,
+    fontFamily: Fonts.body,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  radio: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: '#CBD5E1',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radioActive: {
+    borderColor: '#4F46E5',
+  },
+  radioDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#4F46E5',
+  },
+  nameInput: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    fontSize: 15,
+    fontFamily: Fonts.body,
+    color: '#0F172A',
+  },
+  dupText: {
+    fontSize: 12,
+    fontFamily: Fonts.body,
+    color: '#EA580C',
+    marginTop: 8,
+    lineHeight: 17,
+  },
   instrumentTabs: {
     flexDirection: 'row',
     gap: 8,
@@ -365,14 +649,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 14,
   },
-  fileIconWrap: {
-    width: 36,
-    height: 36,
+  uploadHereBtn: {
+    backgroundColor: '#4F46E5',
+    paddingHorizontal: 12,
+    paddingVertical: 9,
     borderRadius: 8,
-    backgroundColor: '#EEF2FF',
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 10,
+    marginRight: 12,
+  },
+  uploadHereText: {
+    fontSize: 12,
+    fontFamily: Fonts.body,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   fileMeta: {
     flex: 1,
@@ -388,12 +678,6 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.body,
     color: '#94A3B8',
     marginTop: 2,
-  },
-  replaceText: {
-    fontSize: 13,
-    fontFamily: Fonts.body,
-    fontWeight: '600',
-    color: '#4F46E5',
   },
   waveformContainer: {
     height: 32,

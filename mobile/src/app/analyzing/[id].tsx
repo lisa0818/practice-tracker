@@ -41,6 +41,9 @@ export default function AnalyzingScreen() {
 
   const [currentStep, setCurrentStep] = useState(2);
   const [done, setDone] = useState(false);
+  const [failed, setFailed] = useState(false);
+  // A real session comes from the backend; anything else is the offline demo flow
+  const isRealSession = !!id && id.length >= 20;
 
   // Poll backend session if real UUID from API
   useEffect(() => {
@@ -52,9 +55,12 @@ export default function AnalyzingScreen() {
         const s = await getSession(id);
         if (s.status === 'processing') {
           setCurrentStep(3);
-        } else if (s.status === 'completed') {
+        } else if (s.status === 'completed' && s.result) {
           setCurrentStep(5);
           setDone(true);
+        } else if (s.status === 'failed' || s.status === 'completed') {
+          // Finished without a result: the analysis never came back
+          setFailed(true);
         }
       } catch {
         // Fallback to local progression
@@ -69,6 +75,7 @@ export default function AnalyzingScreen() {
   // Smooth step progress progression:
   // Step 2 -> Step 3 -> Step 4 -> Step 5 (Done)
   useEffect(() => {
+    if (isRealSession) return;   // a real analysis finishes when the backend says so
     const t1 = setTimeout(() => setCurrentStep(2), 600);
     const t2 = setTimeout(() => setCurrentStep(3), 1600);
     const t3 = setTimeout(() => setCurrentStep(4), 2600);
@@ -83,7 +90,7 @@ export default function AnalyzingScreen() {
       clearTimeout(t3);
       clearTimeout(t4);
     };
-  }, []);
+  }, [isRealSession]);
 
   // When all steps are done, automatically transition to results
   useEffect(() => {
@@ -99,6 +106,37 @@ export default function AnalyzingScreen() {
   }, [done, id, title, instrument]);
 
   const progressFraction = currentStep >= 5 ? 1 : (currentStep + 1) * 0.18;
+
+  if (failed) {
+    return (
+      <View style={[styles.container, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 24 }]}>
+        <View style={styles.topBar}>
+          <Pressable onPress={() => router.replace('/(tabs)/home' as any)} hitSlop={12} style={styles.closeBtn}>
+            <Text style={styles.closeText}>✕</Text>
+          </Pressable>
+        </View>
+        <View style={styles.contentWrap}>
+          <Text style={styles.title}>Analysis didn't finish</Text>
+          <Text style={styles.subtitle}>{filename} · instrument: {instrument}</Text>
+          <Text style={styles.disclaimerText}>
+            We couldn't analyze this recording, so nothing was added to your progress. This is usually a
+            temporary problem with the analysis service. Please try uploading it again in a moment.
+          </Text>
+        </View>
+        <View style={styles.bottomActions}>
+          <Pressable
+            onPress={() => router.replace('/upload' as any)}
+            style={({ pressed }) => [styles.primaryBtn, pressed && styles.pressed]}
+          >
+            <Text style={styles.primaryBtnText}>Try again</Text>
+          </Pressable>
+          <Pressable onPress={() => router.replace('/(tabs)/home' as any)} style={styles.homeLink}>
+            <Text style={styles.homeLinkText}>Back to home</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 24 }]}>

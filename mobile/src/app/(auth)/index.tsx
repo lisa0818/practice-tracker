@@ -117,16 +117,11 @@ export default function WelcomeScreen() {
         <View style={styles.chipsSection}>
           <View style={styles.chipRow}>
             <Text style={styles.worksForLabel}>Works for</Text>
-            {['Voice', 'Violin', 'Guitar'].map((item) => (
+            {['Violin', 'Guitar', 'Piano'].map((item) => (
               <View key={item} style={styles.chip}>
                 <Text style={styles.chipText}>{item}</Text>
               </View>
             ))}
-          </View>
-          <View style={styles.chipRowSecond}>
-            <View style={styles.chip}>
-              <Text style={styles.chipText}>Piano</Text>
-            </View>
           </View>
         </View>
       </ScrollView>

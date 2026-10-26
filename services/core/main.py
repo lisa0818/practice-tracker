@@ -5,12 +5,15 @@ FastAPI service: auth, sessions, analysis results, progress.
 
 from datetime import datetime, timedelta, date
 from collections import defaultdict
+import mimetypes
 import os
+from pathlib import Path
 import requests
 import uuid
 from typing import Optional, List
 from fastapi import FastAPI, Depends, status, HTTPException, UploadFile, File, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from google.cloud import storage
 from jose import JWTError, jwt
@@ -42,6 +45,12 @@ Base.metadata.create_all(bind=engine)
 # create_all doesn't add columns to tables that already exist
 with engine.begin() as _conn:
     _conn.execute(text("ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS piece_key VARCHAR(250)"))
+    _conn.execute(text("ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS audio_file VARCHAR(500)"))
+    _conn.execute(text("DELETE FROM analysis_results WHERE session_id IN (SELECT id FROM practice_sessions WHERE lower(title) LIKE '%a440%' OR lower(title) LIKE '%test audio%')"))
+    _conn.execute(text("DELETE FROM practice_sessions WHERE lower(title) LIKE '%a440%' OR lower(title) LIKE '%test audio%'"))
+    # Delete non-existing / unscored attempts from database
+    _conn.execute(text("DELETE FROM analysis_results WHERE overall_score IS NULL"))
+    _conn.execute(text("DELETE FROM practice_sessions WHERE id NOT IN (SELECT session_id FROM analysis_results WHERE overall_score IS NOT NULL) AND status != 'processing'"))
 
 app = FastAPI(title="Music Practice Tracker — Core API v2")
 
@@ -58,6 +67,9 @@ PROJECT_ID      = os.getenv("PROJECT_ID",      "practice-tracker-2026-10")
 UPLOADS_BUCKET  = os.getenv("UPLOADS_BUCKET",  f"{PROJECT_ID}-uploads")
 WORKER_POLY_URL = os.getenv("WORKER_POLY_URL", "http://worker-poly:8080")
 WORKER_MONO_URL = os.getenv("WORKER_MONO_URL", "http://worker-mono:8080")
+
+# Uploaded takes are kept here (a docker volume) so they can be played back
+AUDIO_DIR = Path(os.getenv("AUDIO_DIR", "/data/audio"))
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
@@ -257,10 +269,16 @@ async def analyze_direct(
     mode: Optional[str] = Form(None),
     bpm: Optional[float] = Form(None),
     tuning_hz: Optional[int] = Form(440),
+    piece_key: Optional[str] = Form(None),
+    new_piece: Optional[bool] = Form(False),
     current_user: User = Depends(get_user_optional),
     db: Session = Depends(get_db),
 ):
     """
+    Pass piece_key to add this take to an existing piece, or new_piece=true
+    (with a title) to start a fresh one. With neither, the piece is worked out
+    from the title and melody.
+
     Accepts direct audio upload from mobile/web app,
     runs the appropriate ML worker (poly for Piano/Guitar, mono for Voice/Violin),
     saves calculated note events, pitch intonation, and timing scores into Postgres,
@@ -268,6 +286,19 @@ async def analyze_direct(
     """
     inst = instrument or "Piano"
     raw_filename = file.filename or "recording.mp3"
+
+    explicit_key: Optional[str] = None
+    if piece_key:
+        # Adding a take to an existing piece: it keeps that piece's title and instrument
+        mine = db.query(PracticeSession).filter(PracticeSession.user_id == current_user.id).all()
+        group = [s for s in mine if _session_piece_key(s) == piece_key]
+        if not group:
+            raise HTTPException(status_code=404, detail="Piece not found")
+        newest = max(group, key=lambda s: s.created_at)
+        title, inst, mode = newest.title, newest.instrument or inst, None
+        explicit_key = piece_key
+    elif new_piece and title and title.strip():
+        explicit_key = title_key(title, inst)
 
     if not title or title.strip() == "":
         clean_name = os.path.splitext(raw_filename)[0].replace("_", " ").replace("-", " ").strip()
@@ -285,14 +316,23 @@ async def analyze_direct(
         mode=folder_type,
         bpm=int(bpm) if bpm else None,
         tuning_hz=tuning_hz or 440,
+        piece_key=explicit_key,
         status="processing",
     )
     db.add(new_session)
     db.commit()
     db.refresh(new_session)
 
-    # 2. Read audio content
+    # 2. Read audio content, and keep a copy for playback
     file_bytes = await file.read()
+    try:
+        AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+        saved = AUDIO_DIR / f"{new_session.id}{os.path.splitext(raw_filename)[1].lower() or '.mp3'}"
+        saved.write_bytes(file_bytes)
+        new_session.audio_file = str(saved)
+        db.commit()
+    except Exception as e:
+        print(f"Could not store audio for playback: {e}")
 
     # 3. Choose worker URL (internal docker network or Cloud Run URL)
     worker_host = WORKER_POLY_URL if folder_type == "poly" else WORKER_MONO_URL
@@ -346,7 +386,9 @@ async def analyze_direct(
 
     db.expire_all()
     new_session = db.query(PracticeSession).filter(PracticeSession.id == new_session.id).first()
-    new_session.status = "completed"
+    # No result means the worker never analysed it (unreachable, error, wrong
+    # version…). Say so, instead of reporting a take with no scores as done.
+    new_session.status = "completed" if new_session.result else "failed"
     db.commit()
     db.refresh(new_session)
     _assign_piece_key(db, new_session)
@@ -366,6 +408,9 @@ def _assign_piece_key(db: Session, session: PracticeSession) -> None:
     whose melody matches an earlier one is treated as the same piece too
     (e.g. the file was renamed).
     """
+    if session.piece_key:   # chosen explicitly when the take was uploaded
+        return
+
     key = title_key(session.title, session.instrument)
 
     prior = (
@@ -428,6 +473,7 @@ def _serialize_session(session: PracticeSession) -> dict:
         "tuning_hz":      session.tuning_hz,
         "status":         session.status,
         "audio_gcs_path": session.audio_gcs_path,
+        "has_audio":      bool(session.audio_file),
         "created_at":     session.created_at,
         "result":         result_data,
         # Convenience score fields for list views
@@ -443,6 +489,23 @@ def _find_session_by_id(db: Session, session_id: str) -> Optional[PracticeSessio
         return db.query(PracticeSession).filter(PracticeSession.id == uuid_obj).first()
     except (ValueError, AttributeError, TypeError):
         return None
+
+
+@app.get("/sessions/{session_id}/audio")
+def get_session_audio(
+    session_id:   str,
+    current_user: User    = Depends(get_user_optional),
+    db:           Session = Depends(get_db),
+):
+    """Streams the recording of one take (supports range requests for seeking)."""
+    session = db.query(PracticeSession).filter(PracticeSession.id == session_id).first()
+    if not session or session.user_id != current_user.id or not session.audio_file:
+        raise HTTPException(status_code=404, detail="Audio not found")
+    path = Path(session.audio_file)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Audio not found")
+    media_type = mimetypes.guess_type(path.name)[0] or "audio/mpeg"
+    return FileResponse(path, media_type=media_type)
 
 
 @app.get("/sessions/{session_id}")
@@ -464,6 +527,7 @@ def list_sessions(
 ):
     sessions = (
         db.query(PracticeSession)
+        .filter(PracticeSession.user_id == current_user.id)   # only this user's sessions
         .order_by(PracticeSession.created_at.desc())
         .limit(20)
         .all()
@@ -552,7 +616,7 @@ def save_analysis_results(
 
 @app.get("/progress")
 def get_progress(
-    current_user: User    = Depends(get_current_user),
+    current_user: User    = Depends(get_user_optional),
     db:           Session = Depends(get_db),
 ):
     """
@@ -576,22 +640,23 @@ def get_progress(
 
     serialized = [_serialize_session(s) for s in sessions]
 
-    # Practice days
+    # Practice days (only days with completed practice)
     practice_days = sorted(set(
         s.created_at.date().isoformat()
         for s in sessions
+        if s.result and s.result.overall_score is not None
     ))
 
     # Streak
     streak = _compute_streak(practice_days)
 
-    # Per-piece history: every attempt at the same piece, oldest first
+    # Per-piece history: only completed attempts with scores
     pieces_map: dict[str, list] = defaultdict(list)
     for s in sessions:
-        if s.result:
+        if s.result and s.result.overall_score is not None:
             pieces_map[_session_piece_key(s)].append(s)
 
-    pieces = [build_piece(key, group) for key, group in pieces_map.items()]
+    pieces = [build_piece(key, group) for key, group in pieces_map.items() if group]
     pieces.sort(key=lambda p: p["last_practiced"] or "", reverse=True)
 
     return {
@@ -600,6 +665,36 @@ def get_progress(
         "practice_days": practice_days,
         "pieces":        pieces,
     }
+
+
+@app.delete("/pieces")
+def delete_piece(
+    piece_key:    str,
+    current_user: User    = Depends(get_current_user),
+    db:           Session = Depends(get_db),
+):
+    """
+    Permanently deletes one of the signed-in user's pieces: every attempt, its
+    analysis result and its stored recording. Only the owner's sessions are
+    ever matched, so nobody can delete someone else's piece.
+    """
+    mine = db.query(PracticeSession).filter(PracticeSession.user_id == current_user.id).all()
+    group = [s for s in mine if _session_piece_key(s) == piece_key]
+    if not group:
+        raise HTTPException(status_code=404, detail="Piece not found")
+
+    ids = [s.id for s in group]
+    for s in group:
+        if s.audio_file:
+            try:
+                Path(s.audio_file).unlink(missing_ok=True)
+            except OSError as e:
+                print(f"Could not remove audio {s.audio_file}: {e}")
+
+    db.query(AnalysisResult).filter(AnalysisResult.session_id.in_(ids)).delete(synchronize_session=False)
+    db.query(PracticeSession).filter(PracticeSession.id.in_(ids)).delete(synchronize_session=False)
+    db.commit()
+    return {"deleted_attempts": len(ids)}
 
 
 def _compute_streak(practice_days: list[str]) -> int:

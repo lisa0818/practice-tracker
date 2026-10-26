@@ -175,6 +175,7 @@ export async function listSessions(): Promise<SessionSummary[]> {
 /** One upload of a piece, with the scores it earned. */
 export interface PieceAttempt {
   session_id:        string;
+  has_audio:         boolean;
   created_at:        string | null;
   overall_score:     number | null;
   pitch_score:       number | null;
@@ -216,7 +217,152 @@ export interface ProgressData {
 
 export async function getProgress(): Promise<ProgressData> {
   const { data } = await apiClient.get<ProgressData>('/progress');
+  return normalizeProgress(data);
+}
+
+/**
+ * Older servers return `pieces` without the attempt history. If so, rebuild
+ * the pieces from the session list so the app still shows every attempt.
+ */
+function normalizeProgress(raw: ProgressData): ProgressData {
+  if (!raw) return { sessions: [], streak_days: 0, practice_days: [], pieces: [] };
+
+  const validSessions = (raw.sessions ?? []).filter(
+    (s: any) => s.overall_score != null || s.result?.overall_score != null
+  );
+
+  const rawPieces = Array.isArray(raw.pieces) ? raw.pieces : [];
+
+  if (rawPieces.length > 0 && rawPieces.every((p) => p.piece_key && Array.isArray(p.attempts))) {
+    const sanitizedPieces = rawPieces
+      .map((p): PieceProgress | null => {
+        const validAttempts = (p.attempts ?? []).filter((a) => a.overall_score != null);
+        if (validAttempts.length === 0) return null;
+
+        const first = validAttempts[0];
+        const latest = validAttempts[validAttempts.length - 1];
+        const prev = validAttempts.length > 1 ? validAttempts[validAttempts.length - 2] : null;
+        const scored = validAttempts.map((a) => a.overall_score).filter((s): s is number => s != null);
+        const bestScore = scored.length > 0 ? Math.max(...scored) : null;
+        const scoreChange: number | null =
+          prev && latest && latest.overall_score != null && prev.overall_score != null
+            ? Math.round((latest.overall_score - prev.overall_score) * 10) / 10
+            : 0;
+
+        const totalChange =
+          first && latest && latest.overall_score != null && first.overall_score != null
+            ? Math.round((latest.overall_score - first.overall_score) * 10) / 10
+            : 0;
+
+        let summary: PieceSummary = p.summary;
+        if (validAttempts.length <= 1) {
+          summary = {
+            headline: 'First attempt recorded',
+            tone: 'flat',
+            bullets: ['Practice this piece and upload it again to see your improvement here.'],
+          };
+        } else if (p.attempts.length !== validAttempts.length) {
+          // Adjust headline if it was previously calculated with empty attempts
+          summary = {
+            ...p.summary,
+            headline:
+              totalChange >= 1
+                ? `Up ${Math.round(totalChange)} points since your first attempt`
+                : totalChange <= -1
+                ? `Down ${Math.round(Math.abs(totalChange))} points since your first attempt`
+                : 'Holding steady since your first attempt',
+            tone: totalChange >= 1 ? 'up' : totalChange <= -1 ? 'down' : 'flat',
+          };
+        }
+
+        return {
+          ...p,
+          session_count: validAttempts.length,
+          latest_score: latest.overall_score,
+          first_score: first.overall_score,
+          best_score: bestScore,
+          score_change: scoreChange,
+          last_practiced: latest.created_at ?? p.last_practiced,
+          attempts: validAttempts,
+          summary,
+        };
+      })
+      .filter((p): p is PieceProgress => p !== null);
+
+    return {
+      ...raw,
+      sessions: validSessions,
+      pieces: sanitizedPieces,
+    };
+  }
+
+  const groups = new Map<string, any[]>();
+  for (const s of validSessions as any[]) {
+    const key = `${String(s.title ?? '').trim().toLowerCase()}|${String(s.instrument ?? '').toLowerCase()}`;
+    groups.set(key, [...(groups.get(key) ?? []), s]);
+  }
+
+  const built: PieceProgress[] = [...groups.entries()].map(([key, list]): PieceProgress => {
+    list.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+    const attempts: PieceAttempt[] = list.map((s) => ({
+      session_id: s.session_id,
+      has_audio: !!s.has_audio,
+      created_at: s.created_at ?? null,
+      overall_score: s.overall_score ?? null,
+      pitch_score: s.pitch_score ?? null,
+      timing_score: s.timing_score ?? null,
+      in_tune_pct: s.result?.in_tune_pct ?? null,
+      notes_on_beat_pct: s.result?.notes_on_beat_pct ?? null,
+      avg_cents_error: s.result?.avg_cents_error ?? null,
+      steadiness: s.result?.steadiness ?? null,
+      practice_tip: s.result?.practice_tip ?? null,
+    })).filter((a) => a.overall_score != null);
+
+    const first = attempts[0]?.overall_score ?? null;
+    const latest = attempts[attempts.length - 1]?.overall_score ?? null;
+    const prev = attempts.length > 1 ? attempts[attempts.length - 2]?.overall_score ?? null : null;
+    const total = first != null && latest != null ? latest - first : 0;
+    const tone: 'up' | 'down' | 'flat' = total >= 1 ? 'up' : total <= -1 ? 'down' : 'flat';
+    return {
+      piece_key: key,
+      title: list[list.length - 1].title,
+      instrument: list[list.length - 1].instrument ?? null,
+      session_count: attempts.length,
+      latest_score: latest,
+      score_change: latest != null && prev != null ? latest - prev : 0,
+      first_score: first,
+      best_score: attempts.length > 0 ? Math.max(...attempts.map((a) => a.overall_score ?? 0)) : null,
+      last_practiced: attempts[attempts.length - 1]?.created_at ?? null,
+      attempts,
+      summary: {
+        headline: attempts.length <= 1
+          ? 'First attempt recorded'
+          : total >= 1 ? `Up ${Math.round(total)} points since your first attempt`
+          : total <= -1 ? `Down ${Math.round(Math.abs(total))} points since your first attempt`
+          : 'Holding steady since your first attempt',
+        tone,
+        bullets: attempts.length <= 1 ? ['Practice this piece and upload it again to see your improvement here.'] : [],
+      },
+    };
+  }).filter((p) => p.attempts.length > 0);
+  built.sort((a, b) => String(b.last_practiced).localeCompare(String(a.last_practiced)));
+  return { ...raw, sessions: validSessions, pieces: built };
+}
+
+/** Permanently deletes a piece with all its attempts and recordings. */
+export async function deletePiece(pieceKey: string): Promise<{ deleted_attempts: number }> {
+  const { data } = await apiClient.delete<{ deleted_attempts: number }>('/pieces', {
+    params: { piece_key: pieceKey },
+  });
   return data;
+}
+
+/** Player source for a stored take; the audio endpoint needs the login token. */
+export function audioSource(sessionId: string) {
+  return {
+    uri:     `${BASE_URL}/sessions/${sessionId}/audio`,
+    headers: _token ? { Authorization: `Bearer ${_token}` } : undefined,
+  };
 }
 
 // ─── Upload helper ─────────────────────────────────────────────────────────────

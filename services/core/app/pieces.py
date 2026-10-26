@@ -60,15 +60,16 @@ def _attempt(session) -> dict:
     r = session.result
     return {
         "session_id":        str(session.id),
+        "has_audio":         bool(session.audio_gcs_path),
         "created_at":        session.created_at.isoformat() if session.created_at else None,
-        "overall_score":     _num(r.overall_score),
-        "pitch_score":       _num(r.pitch_score),
-        "timing_score":      _num(r.timing_score),
-        "in_tune_pct":       _num(r.in_tune_pct),
-        "notes_on_beat_pct": _num(r.notes_on_beat_pct),
-        "avg_cents_error":   _num(r.avg_cents_error),
-        "steadiness":        _num(r.steadiness),
-        "practice_tip":      r.practice_tip,
+        "overall_score":     _num(r.overall_score) if r else None,
+        "pitch_score":       _num(r.pitch_score) if r else None,
+        "timing_score":      _num(r.timing_score) if r else None,
+        "in_tune_pct":       _num(r.in_tune_pct) if r else None,
+        "notes_on_beat_pct": _num(r.notes_on_beat_pct) if r else None,
+        "avg_cents_error":   _num(r.avg_cents_error) if r else None,
+        "steadiness":        _num(r.steadiness) if r else None,
+        "practice_tip":      r.practice_tip if r else None,
     }
 
 
@@ -82,17 +83,20 @@ def summarize(attempts: list[dict]) -> dict:
     """Plain-language summary comparing the latest attempt with earlier ones."""
     latest = attempts[-1]
     n = len(attempts)
-    pitch, timing = latest["pitch_score"], latest["timing_score"]
+    pitch, timing = latest.get("pitch_score"), latest.get("timing_score")
 
     bullets: list[str] = []
 
-    if n == 1:
+    if n <= 1:
         headline, tone = "First attempt recorded", "flat"
         bullets.append("Practice this piece and upload it again to see your improvement here.")
     else:
         first, prev = attempts[0], attempts[-2]
-        total = _delta(latest["overall_score"], first["overall_score"]) or 0.0
-        step = _delta(latest["overall_score"], prev["overall_score"]) or 0.0
+        latest_score = latest.get("overall_score")
+        first_score = first.get("overall_score")
+        prev_score = prev.get("overall_score")
+        total = _delta(latest_score, first_score) or 0.0
+        step = _delta(latest_score, prev_score) or 0.0
 
         if total >= 1:
             headline, tone = f"Up {total:.0f} points since your first attempt", "up"
@@ -107,18 +111,21 @@ def summarize(attempts: list[dict]) -> dict:
             bullets.append("About the same as your last attempt.")
 
         for label, key in (("Pitch", "pitch_score"), ("Timing", "timing_score")):
-            d = _delta(latest[key], first[key])
+            d = _delta(latest.get(key), first.get(key))
             if d is not None and abs(d) >= 1:
-                bullets.append(f"{label} {'improved' if d > 0 else 'dropped'} by {abs(d):.0f} points ({first[key]:.0f} → {latest[key]:.0f}).")
+                bullets.append(f"{label} {'improved' if d > 0 else 'dropped'} by {abs(d):.0f} points ({first.get(key, 0):.0f} → {latest.get(key, 0):.0f}).")
 
-        best_i = max(range(n), key=lambda i: attempts[i]["overall_score"] or 0)
-        if best_i == n - 1:
-            bullets.append("This is your best attempt so far.")
-        else:
-            bullets.append(f"Your best was attempt {best_i + 1} (score {attempts[best_i]['overall_score']:.0f}).")
+        scored_attempts = [a for a in attempts if a.get("overall_score") is not None]
+        if scored_attempts:
+            best_attempt = max(scored_attempts, key=lambda a: a["overall_score"])
+            if best_attempt == latest:
+                bullets.append("This is your best attempt so far.")
+            else:
+                n_best = attempts.index(best_attempt) + 1
+                bullets.append(f"Your best was attempt {n_best} (score {best_attempt['overall_score']:.0f}).")
 
     if pitch is not None and timing is not None and abs(pitch - timing) >= 10:
-        weaker, stronger = ("Timing", "pitch") if timing < pitch else ("Pitch", "timing")
+        weaker = "Timing" if timing < pitch else "Pitch"
         tip = "try a metronome at a slower tempo" if weaker == "Timing" else "slow practice with a tuner will help"
         bullets.append(f"{weaker} is the area to work on next — {tip}.")
     if latest.get("practice_tip"):
@@ -128,23 +135,31 @@ def summarize(attempts: list[dict]) -> dict:
 
 
 def build_piece(key: str, sessions: list) -> dict:
-    """sessions: that piece's completed sessions with results, any order."""
-    ordered = sorted(sessions, key=lambda s: s.created_at)
+    """sessions: that piece's completed sessions, any order."""
+    scored_sessions = [s for s in sessions if s.result and s.result.overall_score is not None]
+    if not scored_sessions:
+        scored_sessions = sessions
+
+    ordered = sorted(scored_sessions, key=lambda s: s.created_at)
     attempts = [_attempt(s) for s in ordered]
-    latest, first = attempts[-1], attempts[0]
+    latest = attempts[-1] if attempts else {}
+    first = attempts[0] if attempts else {}
     prev = attempts[-2] if len(attempts) > 1 else None
-    newest = ordered[-1]
+    newest = ordered[-1] if ordered else (sessions[-1] if sessions else None)
+
+    scored = [a["overall_score"] for a in attempts if a.get("overall_score") is not None]
+    best_score = max(scored) if scored else None
 
     return {
         "piece_key":     key,
-        "title":         newest.title,
-        "instrument":    newest.instrument,
+        "title":         newest.title if newest else key,
+        "instrument":    newest.instrument if newest else None,
         "session_count": len(attempts),
-        "latest_score":  latest["overall_score"],
-        "score_change":  _delta(latest["overall_score"], prev["overall_score"]) if prev else 0,
-        "first_score":   first["overall_score"],
-        "best_score":    max(a["overall_score"] or 0 for a in attempts),
-        "last_practiced": latest["created_at"],
+        "latest_score":  latest.get("overall_score"),
+        "score_change":  _delta(latest.get("overall_score"), prev.get("overall_score")) if (prev and latest.get("overall_score") is not None and prev.get("overall_score") is not None) else 0,
+        "first_score":   first.get("overall_score"),
+        "best_score":    best_score,
+        "last_practiced": latest.get("created_at"),
         "attempts":      attempts,
-        "summary":       summarize(attempts),
+        "summary":       summarize(attempts) if attempts else {"headline": "First attempt recorded", "tone": "flat", "bullets": []},
     }
